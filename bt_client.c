@@ -798,6 +798,12 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
 
     sendBitfield( this, torrent );
     this->status = BT_AWAIT_BITFIELD;
+    
+    // Set us up to get the bitfield
+    free( this->incomingMessageData );
+    this->incomingMessageData = Malloc( 4 );
+    this->incomingMessageOffset = 0;
+    this->incomingMessageRemaining = 4;
 
     return;
 
@@ -825,8 +831,11 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
   else {
 
     int error = 0;
+    printf(" Full Message Type %d\n", (int)this->incomingMessageData[4] );
     // Handle full message here ...
     switch( this->incomingMessageData[4] ) {
+
+
 
     case ( 0 ) :       // Choke
       this->peer_choking = 1;  
@@ -914,6 +923,8 @@ void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
   
   this->incomingMessageRemaining -= ret;
   this->incomingMessageOffset += ret;
+
+  printf("Have read %d/%d bytes.\n", this->incomingMessageOffset, this->incomingMessageRemaining + this->incomingMessageOffset);
 
   if ( this->incomingMessageRemaining == 0 ) {
     handleFullMessage( this, torrent );
