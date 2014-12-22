@@ -692,7 +692,6 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
       if ( torrent->peerList[i].status == BT_AWAIT_INITIAL_HANDSHAKE ||
 	   torrent->peerList[i].status == BT_AWAIT_RESPONSE_HANDSHAKE ||
 	   1 ) {
-	printf("Added to read set: %d\n", torrent->peerList[i].socket);
 	FD_SET( torrent->peerList[i].socket, readPtr );
 	if ( maxFD < torrent->peerList[i].socket ) {
 	  maxFD = torrent->peerList[i].socket;
@@ -702,7 +701,6 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
 
       // We want to write to anybody who has data pending
       if ( torrent->peerList[i].outgoingData->size > 0 ) {
-	printf("Added to write set: %d\n", torrent->peerList[i].socket);
 	FD_SET( torrent->peerList[i].socket, writePtr ) ;
 	if ( maxFD < torrent->peerList[i].socket ) {
 	  maxFD = torrent->peerList[i].socket;
@@ -831,7 +829,6 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
   else {
 
     int error = 0;
-    printf(" Full Message Type %d\n", (int)this->incomingMessageData[4] );
     // Handle full message here ...
     switch( this->incomingMessageData[4] ) {
 
@@ -906,7 +903,7 @@ void handleWrite( struct peerInfo * this, struct torrentInfo * torrent ) {
 void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   int ret;
-  printf("Reading From %s:%d\n", this->ipString, this->portNum );
+  //printf("Reading From %s:%d\n", this->ipString, this->portNum );
   ret = read( this->socket, 
 	      &this->incomingMessageData[ this->incomingMessageOffset ], 
 	      this->incomingMessageRemaining );
@@ -924,7 +921,7 @@ void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
   this->incomingMessageRemaining -= ret;
   this->incomingMessageOffset += ret;
 
-  printf("Have read %d/%d bytes.\n", this->incomingMessageOffset, this->incomingMessageRemaining + this->incomingMessageOffset);
+  //printf("Have read %d/%d bytes.\n", this->incomingMessageOffset, this->incomingMessageRemaining + this->incomingMessageOffset);
 
   if ( this->incomingMessageRemaining == 0 ) {
     handleFullMessage( this, torrent );
@@ -1003,7 +1000,7 @@ int main(int argc, char ** argv) {
 
     handleActiveFDs( &readFDs, &writeFDs, t, listeningSocket );
     
-    printf("Looping again after handling %d fds\n", ret );
+    //printf("Looping again after handling %d fds\n", ret );
 
 
   }
