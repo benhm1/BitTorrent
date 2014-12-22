@@ -8,6 +8,7 @@
 #include "percentEncode.h"
 
 #include <netdb.h>
+#include <time.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/select.h>
@@ -16,13 +17,21 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include "StringStream/StringStream.h"
 #include "bitfield.h"
 
 
 #define BT_CONNECTED 1
+// They connected to us; we should get a handshake from them
+#define BT_AWAIT_INITIAL_HANDSHAKE 2  
+// We sent them a handshake; they should send one back
+#define BT_AWAIT_RESPONSE_HANDSHAKE 3
 
+
+#define PEER_LISTEN_PORT 6881
+#define BACKLOG 20
 
 struct chunkInfo {
 
@@ -55,6 +64,9 @@ struct torrentInfo {
 
   char * peerID;
 
+  struct peerInfo * peerList;
+  int peerListLen;
+
 };
 
 
@@ -77,10 +89,11 @@ struct peerInfo {
   // Bitfield of their blocks
   Bitfield * haveBlocks ;
 
-  int incomingMessageType ;
-  int incomingMessageSize ;
+  int readingHeader;
   int incomingMessageRemaining ;
   char * incomingMessageData ;
+
+  int incomingMessageOffset;
 
   StringStream * outgoingData ;
 
@@ -88,10 +101,11 @@ struct peerInfo {
 
 };
 
-struct peerInfo * peerList ;
 
-int initializePeer( struct peerInfo * thisPtr, struct torrentInfo * torrent );
+
+void initializePeer( struct peerInfo * thisPtr, struct torrentInfo * torrent );
 void destroyPeer( struct peerInfo * peer ) ;
+int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent , char * handshake) ;
 
 void * Malloc( size_t size ) {
 
@@ -289,14 +303,13 @@ int trackerAnnounce( struct torrentInfo * torrent ) {
 
   char * infoHash = percentEncode( torrent->infoHash, 20 );
   char * peerID = percentEncode( torrent->peerID, 20 );
-  int port = addr.sin_port;
   // TODO :: Dynamically generate these from the file blocks
   int uploaded = 0;
   int downloaded = 0;
   int left = torrent->totalSize;
   
 
-  snprintf(request, 1023, "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=0&no_peer_id=0&event=started HTTP/1.1\r\nHost: %s:6969\r\n\r\n", infoHash, peerID, port, uploaded, downloaded, left, torrent-> trackerDomain);
+  snprintf(request, 1023, "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=0&no_peer_id=0&event=started&numwant=3 HTTP/1.1\r\nHost: %s:6969\r\n\r\n", infoHash, peerID, PEER_LISTEN_PORT , uploaded, downloaded, left, torrent-> trackerDomain);
 
   printf("REQUEST\n\n%s\n\n", request );
 
@@ -347,7 +360,9 @@ int trackerAnnounce( struct torrentInfo * torrent ) {
   uint16_t portBytes;
 
   peerListPtr = numEnd + 1;
-  peerList = Malloc( (numBytes/6) * sizeof( struct peerInfo ) );
+  torrent->peerList = Malloc( (numBytes/6) * sizeof( struct peerInfo ) );
+  torrent->peerListLen = numBytes / 6;
+
 
   char handshake[68];
   char tmp = 19;
@@ -361,11 +376,8 @@ int trackerAnnounce( struct torrentInfo * torrent ) {
   memcpy( &handshake[28], torrent->infoHash, 20 );
   memcpy( &handshake[48], torrent->peerID, 20 );
 
-
-  //snprintf( handshake, 69, "%cBitTorrent protocol%d%d%s%s", 19, 0, 0, torrent->infoHash, torrent->peerID );
-
   for ( i = 0; i < numBytes/6; i ++ ) {
-    struct peerInfo * this = &peerList[i];
+    struct peerInfo * this = &torrent->peerList[i];
 
     // Get IP and port data in the right place
     memcpy( ip, peerListPtr, 4 );
@@ -374,11 +386,19 @@ int trackerAnnounce( struct torrentInfo * torrent ) {
     snprintf( this->ipString, 16, "%u.%u.%u.%u", (int)ip[0], (int)ip[1], (int)ip[2], (int)ip[3] );
     this->portNum = ntohs( portBytes );
 
-    initializePeer( this, torrent );
-    SS_Push( this->outgoingData, handshake, 68 );
-    peerListPtr += 6;
+    printf("Initializing %s:%u - ", this->ipString, (int)this->portNum );
+    fflush(stdout);
 
-    destroyPeer( this );
+    if ( connectToPeer( this, torrent, handshake ) ) {
+      printf("FAILED\n");
+    }
+    else {  
+      printf("SUCCESS\n");
+      SS_Push( this->outgoingData, handshake, 68 );
+      this->status = BT_AWAIT_RESPONSE_HANDSHAKE;
+    }
+
+    peerListPtr += 6;
 
   }
   
@@ -399,18 +419,72 @@ void destroyPeer( struct peerInfo * peer ) {
   Bitfield_Destroy( peer->haveBlocks );
   free( peer->incomingMessageData );
   SS_Destroy( peer->outgoingData );
+  peer->defined = 0;
   return;
 
 }
 
-int initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
+int getFreeSlot( struct torrentInfo * torrent ) {
 
+  // Find a suitable slot for this peer
+  int i;
+  for ( i = 0; i < torrent->peerListLen; i ++ ) {
+    if ( torrent->peerList[i].defined == 0 ) {
+      return i ;
+    }
+  }
+  torrent->peerList = realloc( torrent->peerList, 2 * torrent->peerListLen * sizeof( struct peerInfo ) );
+  if ( ! torrent->peerList ) {
+    perror("realloc");
+    exit(1);
+  }
+  for ( i = torrent->peerListLen; i < torrent->peerListLen*2; i ++ ) {
+    torrent->peerList[i].defined = 0;
+  }
+
+  int retVal = torrent->peerListLen;
+  torrent->peerListLen *= 2;
+  
+  return retVal;
+
+}
+
+
+void peerConnectedToUs( struct torrentInfo * torrent, int listenFD ) {
+
+  struct sockaddr_in remote_addr;
+  unsigned int socklen = sizeof(remote_addr);
+  int newfd = accept(listenFD, (struct sockaddr*)& remote_addr, &socklen);
+  if (newfd < 0 ) {
+    perror("Error accepting connection");
+    exit(1);
+  }
+
+  int slotIdx = getFreeSlot( torrent );
+
+  struct peerInfo * this = & torrent->peerList[ slotIdx ] ;
+  this->socket = newfd;
+  strncpy( this->ipString, inet_ntoa( remote_addr.sin_addr ), 16 );
+  this->portNum = ntohs(remote_addr.sin_port) ;
+
+  initializePeer( this, torrent );
+
+  this->status = BT_AWAIT_INITIAL_HANDSHAKE ;
+
+  printf("Accepted Connection from %s:%u\n", this->ipString, (unsigned int)this->portNum );
+
+  return ;
+
+
+
+}
+
+int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * handshake) {
+
+  int res;
 
   char * ip = this->ipString;
   unsigned short port = this->portNum;
-
-  // Slot is taken
-  this->defined = 1;
 
   // Set up our socket
   int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -423,16 +497,110 @@ int initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
   addr.sin_family = AF_INET;
   addr.sin_port = htons( port ); 
   addr.sin_addr.s_addr = inet_addr( ip ) ;
-  
-  int res = connect( sock, (struct sockaddr*) &addr, sizeof(addr) );
+ 
+  // Set socket to nonblocking for connect, in case it fails
+  int flags = fcntl( sock, F_GETFL );
+  res = fcntl(sock, F_SETFL, O_NONBLOCK);  // set to non-blocking
   if ( res < 0 ) {
+    perror("fcntl");
+    exit(1);
+  }
+
+  res = connect( sock, (struct sockaddr*) &addr, sizeof(addr) );
+  // By default, since we are non blocking, we will return 
+  // EINPROGRESS. The canonical way to check if connect() was 
+  // successful is to call select() on the file descriptor
+  // to see if we can write to it. This allows us to use a 
+  // timeout and cancel the operation while remaining non-blocking
+  // See: http://developerweb.net/viewtopic.php?id=3196
+  int error = 0;
+
+  if (res < 0) { 
+    if (errno == EINPROGRESS) { 
+      fd_set myset;
+      struct timeval tv;
+      tv.tv_sec = 0; 
+      tv.tv_usec = 500000; 
+      FD_ZERO(&myset); 
+      FD_SET(sock, &myset); 
+      res = select(sock+1, NULL, &myset, NULL, &tv); 
+      if (res < 0 && errno != EINTR) { 
+	perror("select");
+	exit(1);
+      } 
+      else if (res > 0) { 
+	// Socket selected for write 
+	int valopt;
+	unsigned int lenInt = sizeof(int);
+	if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (void*)(&valopt), &lenInt) < 0) { 
+	  fprintf(stderr, "Error in getsockopt() %d - %s\n", errno, strerror(errno)); 
+	  error = 1;
+	} 
+	// Check the value returned... 
+	if (valopt) { 
+	  fprintf(stderr, "Error in delayed connection() %d - %s\n", valopt, strerror(valopt) 
+		  ); 
+	  error = 1;
+	} 
+      }
+      else { 
+	fprintf(stderr, "Timeout in select() - Cancelling!\n"); 
+	error = 1;
+      }
+    } 
+    else { 
+      fprintf(stderr, "Error connecting %d - %s\n", errno, strerror(errno)); 
+      error = 1;
+    } 
+  }
+
+  if ( ! error ) {
+
+    res = write( sock, handshake, 68 );
+    if ( res != 68 ) {
+      printf("Error sending handshake.\n");
+      error = 1;
+    }
+    if ( res < 0 ) {
+      perror("Handshake write: ");
+      exit(1);
+    }
+  }
+
+
+  if ( error ) {
     // Just get rid of this slot
+    perror("connect");
     this->defined = 0;
     close( sock );
     return -1;
   }
+  
+
+
+  // And, make it blocking again
+  res = fcntl( sock, F_SETFL, flags );
+  if ( res < 0 ) {
+    perror("fcntl set blocking");
+    exit(1);
+  }
 
   this->socket = sock;
+
+  initializePeer( this, torrent );
+
+  this->status = BT_CONNECTED;
+
+  return 0;
+
+}
+
+
+
+void initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
+
+  // Slot is taken
+  this->defined = 1;
 
   // Initialize our sending and receiving state and data structures
   this->peer_choking = 1;
@@ -442,17 +610,14 @@ int initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
   
   this->haveBlocks = Bitfield_Init( torrent->numChunks );
   
-  this->incomingMessageType = 0;
-  this->incomingMessageSize = 0;
-  this->incomingMessageRemaining = 0;
-  
-  this->incomingMessageData = NULL;
+  this->readingHeader = 1;
+  this->incomingMessageRemaining = 4; // Length
+  this->incomingMessageOffset = 0;
+  this->incomingMessageData = Malloc( 4 ); // 4 for length + 1 for header; will realloc this
   
   this->outgoingData = SS_Init();
 
-  this->status = BT_CONNECTED ;
-
-  return 0;
+  return;
 
 }
 
@@ -468,25 +633,238 @@ void destroyTorrentInfo( struct torrentInfo * t ) {
   free( t->comment );
   free( t->infoHash );
   free( t->peerID );
+  free( t->peerList );
+  
+
   free( t );
 
   return;
 
 }
 
+int setupListeningSocket() {
 
+  // Initialize the socket that our peers will connect to
+  /* Create the socket that we'll listen on. */
+  int serv_sock = socket(AF_INET, SOCK_STREAM, 0);
+  
+  /* Set SO_REUSEADDR so that we don't waste time in TIME_WAIT. */
+  int val = 1;
+  val = setsockopt(serv_sock, SOL_SOCKET, SO_REUSEADDR, &val,
+                   sizeof(val));
+  if (val < 0) {
+    perror("Setting socket option failed");
+    exit(1);
+  }
+
+  struct sockaddr_in addr;
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons( PEER_LISTEN_PORT );
+  addr.sin_addr.s_addr = INADDR_ANY;
+  
+  /* Bind our socket and start listening for connections. */
+  val = bind(serv_sock, (struct sockaddr*)&addr, sizeof(addr));
+  if(val < 0) {
+    perror("Error binding to port");
+    exit(1);
+  }
+  
+  val = listen(serv_sock, BACKLOG);
+  if(val < 0) {
+    perror("Error listening for connections");
+    exit(1);
+  }
+
+  return serv_sock;
+
+}
+
+int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo * torrent ) {
+
+  int i;
+
+  int maxFD = 0;
+
+  for ( i = 0; i < torrent->peerListLen; i ++ ) {
+    if ( torrent->peerList[i].defined ) {
+
+      // We want to read from anybody who meets any of the following criteria
+      //   * We are waiting for a handshake response
+      //   * We are not choking them
+      if ( torrent->peerList[i].status == BT_AWAIT_INITIAL_HANDSHAKE ||
+	   torrent->peerList[i].status == BT_AWAIT_RESPONSE_HANDSHAKE ||
+	   ! torrent->peerList[i].am_choking ) {
+	FD_SET( torrent->peerList[i].socket, readPtr );
+	if ( maxFD < torrent->peerList[i].socket ) {
+	  maxFD = torrent->peerList[i].socket;
+	}
+
+      }
+
+      // We want to write to anybody who has data pending
+      if ( torrent->peerList[i].outgoingData->size > 0 ) {
+	FD_SET( torrent->peerList[i].socket, writePtr ) ;
+	if ( maxFD < torrent->peerList[i].socket ) {
+	  maxFD = torrent->peerList[i].socket;
+	}
+      }
+    } /* Peer is defined */
+  }
+
+  return maxFD ;
+
+
+}
+
+void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
+  
+  // If we were reading the header, then realloc enough space for the whole message
+  if ( this->readingHeader == 1 ) {
+    int len;
+    memcpy( &len, this->incomingMessageData, 4 );
+    len = ntohl( len );
+    
+    // Handle keepalives
+    if ( len == 0 ) {
+      this->incomingMessageRemaining = 4;
+      this->incomingMessageOffset = 0;
+      this->readingHeader = 1 ;
+    }
+    else {
+      this->incomingMessageData = realloc( this->incomingMessageData, len + 4);
+      this->incomingMessageRemaining = len;
+      this->incomingMessageOffset = 4;
+      this->readingHeader = 0;
+    }
+  }
+  else {
+
+    // Handle full message here ...
+
+    // And prepare for the next request
+    this->incomingMessageRemaining = 4;
+    this->incomingMessageOffset = 0;
+    this->readingHeader = 1 ;
+  }
+
+
+}
+
+void handleWrite( struct peerInfo * this, struct torrentInfo * torrent ) {
+
+  int ret;
+  ret = write( this->socket, this->outgoingData->head, this->outgoingData->size );
+  if ( ret < 0 ) {
+    perror("write");
+    exit(1);
+  }
+  SS_Pop( this->outgoingData, ret );
+  return;
+
+}
+
+void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
+
+  int ret;
+
+  ret = read( this->socket, 
+	      &this->incomingMessageData[ this->incomingMessageOffset ], 
+	      this->incomingMessageRemaining );
+  if ( ret < 0 ) {
+    perror( "read" );
+    exit(1);
+  }
+  if ( 0 == ret ) {
+    // Peer closed our connection
+    printf("Connection from %s:%u was closed by peer.\n", this->ipString, (unsigned int) this->portNum );
+    destroyPeer( this );
+    return ;
+  }
+  
+  this->incomingMessageRemaining -= ret;
+  this->incomingMessageOffset += ret;
+
+  if ( this->incomingMessageRemaining == 0 ) {
+    handleFullMessage( this, torrent );
+  }
+  
+  return;
+
+}
+
+void handleActiveFDs( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * torrent, int listeningSock ) {
+
+  int i;
+
+  if ( FD_ISSET( listeningSock, readFDs ) ) {
+    peerConnectedToUs( torrent, listeningSock );
+  }
+
+  for ( i = 0; i < torrent->peerListLen; i ++ ) {
+    struct peerInfo * this = &torrent->peerList[i] ;
+    if ( this->defined ) {
+
+      if ( FD_ISSET( this->socket, readFDs ) ) {
+	handleRead( this, torrent );
+      }
+
+      if ( FD_ISSET( this->socket, writeFDs ) ) {
+	handleWrite( this, torrent );
+      }
+
+    }
+  }
+  
+
+}
 
 int main(int argc, char ** argv) {
 
+  int ret;
+
   be_node* data = load_be_node( argv[1] );
+
+  int listeningSocket = setupListeningSocket();
+
   struct torrentInfo * t = processBencodedTorrent( data );
 
   trackerAnnounce( t ) ;
 
-  destroyTorrentInfo( t );
-  
-  free( peerList );
+  // By this point, we have a list of peers we are connected to.
+  // We can now start our select loop
+  fd_set readFDs, writeFDs;
+  struct timeval tv;
+  tv.tv_sec = 10;
+  tv.tv_usec = 0;
 
+
+  while ( 1 ) {
+    FD_ZERO( &readFDs );
+    FD_ZERO( &writeFDs );
+
+    // We always want to accept new connections
+    FD_SET( listeningSocket, &readFDs );
+
+    int maxFD = setupReadWriteSets( &readFDs, &writeFDs, t );
+    
+    ret = select( maxFD + 1, &readFDs, &writeFDs, NULL, &tv );
+    if ( ret < 0 ) {
+      perror( "select" );
+      exit(1);
+    }
+
+    handleActiveFDs( &readFDs, &writeFDs, t, listeningSocket );
+    
+
+
+
+  }
+
+
+
+
+  close( listeningSocket );
+  destroyTorrentInfo( t );
   be_dump( data );
   be_free( data );
 
