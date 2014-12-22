@@ -28,7 +28,7 @@
 #define BT_AWAIT_INITIAL_HANDSHAKE 2  
 // We sent them a handshake; they should send one back
 #define BT_AWAIT_RESPONSE_HANDSHAKE 3
-
+#define BT_AWAIT_BITFIELD 4
 
 #define PEER_LISTEN_PORT 6881
 #define BACKLOG 20
@@ -394,8 +394,6 @@ int trackerAnnounce( struct torrentInfo * torrent ) {
     }
     else {  
       printf("SUCCESS\n");
-      SS_Push( this->outgoingData, handshake, 68 );
-      this->status = BT_AWAIT_RESPONSE_HANDSHAKE;
     }
 
     peerListPtr += 6;
@@ -589,7 +587,7 @@ int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * 
 
   initializePeer( this, torrent );
 
-  this->status = BT_CONNECTED;
+  this->status = BT_AWAIT_RESPONSE_HANDSHAKE;
 
   return 0;
 
@@ -611,9 +609,9 @@ void initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
   this->haveBlocks = Bitfield_Init( torrent->numChunks );
   
   this->readingHeader = 1;
-  this->incomingMessageRemaining = 4; // Length
+  this->incomingMessageRemaining = 68; // Length
   this->incomingMessageOffset = 0;
-  this->incomingMessageData = Malloc( 4 ); // 4 for length + 1 for header; will realloc this
+  this->incomingMessageData = Malloc( 68 ); // First message we expect is a handshake
   
   this->outgoingData = SS_Init();
 
@@ -693,7 +691,8 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
       //   * We are not choking them
       if ( torrent->peerList[i].status == BT_AWAIT_INITIAL_HANDSHAKE ||
 	   torrent->peerList[i].status == BT_AWAIT_RESPONSE_HANDSHAKE ||
-	   ! torrent->peerList[i].am_choking ) {
+	   1 ) {
+	printf("Added to read set: %d\n", torrent->peerList[i].socket);
 	FD_SET( torrent->peerList[i].socket, readPtr );
 	if ( maxFD < torrent->peerList[i].socket ) {
 	  maxFD = torrent->peerList[i].socket;
@@ -703,6 +702,7 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
 
       // We want to write to anybody who has data pending
       if ( torrent->peerList[i].outgoingData->size > 0 ) {
+	printf("Added to write set: %d\n", torrent->peerList[i].socket);
 	FD_SET( torrent->peerList[i].socket, writePtr ) ;
 	if ( maxFD < torrent->peerList[i].socket ) {
 	  maxFD = torrent->peerList[i].socket;
@@ -716,8 +716,93 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
 
 }
 
+int handleHaveMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
+  uint32_t blockNum;
+  memcpy( &blockNum, &this->incomingMessageData[5], 4 );
+  blockNum = ntohl( blockNum );
+  printf("%s:%d HAVE %u\n", this->ipString, this->portNum, blockNum );
+  return Bitfield_Set( this->haveBlocks, blockNum );
+}
+
+int handleBitfieldMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
+  printf("%s:%d BITFIELD\n", this->ipString, this->portNum );
+  int len;
+  memcpy( &len, &this->incomingMessageData[0], 4 );
+  len = ntohl( len );
+  return Bitfield_FromExisting( this->haveBlocks, 
+				&this->incomingMessageData[5],
+				len - 1 ); // Don't count message type byte
+
+}
+
+int handleRequestMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
+
+  // If we have the block, then break it into chunks and append those requests
+  // to this socket's pending queue.
+  
+  return 0;
+}
+
+
+int handlePieceMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
+
+  return 0;
+}
+
+void sendBitfield( struct peerInfo * this, struct torrentInfo * torrent ) {
+
+  return;
+
+  int len = this->haveBlocks->numBytes + 1;
+  char id = 5;
+  char message[len + 4];
+  memcpy( message, &len, 4 );
+  memcpy( &message[4], &id, 1 );
+  memcpy( &message[5], this->haveBlocks->buffer, this->haveBlocks->numBytes );
+  SS_Push( this->outgoingData, message, len + 4 );
+  return;
+
+}
+
+
 void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
   
+  // If we were expecting a handshake, see if we got it
+  if ( this->status == BT_AWAIT_INITIAL_HANDSHAKE ||
+       this->status == BT_AWAIT_RESPONSE_HANDSHAKE ) {
+
+    // Validate that this is a valid handshake
+    char correct[68];
+    char tmp = 19;
+    memcpy( &correct[0], &tmp, 1 );
+    char protocol[20];
+    strncpy( protocol, "BitTorrent protocol", 19 );
+    memcpy( &correct[1], protocol, 19 );
+    int flags = 0;
+    memcpy( &correct[20], &flags, 4 );
+    memcpy( &correct[24], &flags, 4 );
+    memcpy( &correct[28], torrent->infoHash, 20 );
+    memcpy( &correct[48], torrent->peerID, 20 );
+
+    if ( ! memcmp( correct, this->incomingMessageData, 48 ) ) {
+      printf("Invalid handshake from %s:%d\n", this->ipString, this->portNum);
+      destroyPeer( this );
+      return;
+    }
+    printf("Got handshake from %s:%d\n", this->ipString, this->portNum );
+
+    if ( this->status == BT_AWAIT_INITIAL_HANDSHAKE ) {
+      // Send our handshake back
+      SS_Push( this->outgoingData, correct, 68 );
+    } 
+
+    sendBitfield( this, torrent );
+    this->status = BT_AWAIT_BITFIELD;
+
+    return;
+
+  }
+
   // If we were reading the header, then realloc enough space for the whole message
   if ( this->readingHeader == 1 ) {
     int len;
@@ -739,12 +824,55 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
   }
   else {
 
+    int error = 0;
     // Handle full message here ...
+    switch( this->incomingMessageData[4] ) {
 
-    // And prepare for the next request
-    this->incomingMessageRemaining = 4;
-    this->incomingMessageOffset = 0;
-    this->readingHeader = 1 ;
+    case ( 0 ) :       // Choke
+      this->peer_choking = 1;  
+      printf("%s:%d - %s\n", this->ipString, this->portNum, "CHOKE");
+      break; 
+    case ( 1 ) :       // Unchoke
+      this->peer_choking = 0; 
+      printf("%s:%d - %s\n", this->ipString, this->portNum, "UN CHOKE");
+      break; 
+    case ( 2 ) :       // Interested
+      this->peer_interested = 1; 
+      printf("%s:%d - %s\n", this->ipString, this->portNum, "INTERESTED");
+      break; 
+    case ( 3 ) :
+      this->peer_interested = 0;
+      printf("%s:%d - %s\n", this->ipString, this->portNum, "UN INTERESTED");
+      break; 
+    case ( 4 ) :
+      error = handleHaveMessage( this, torrent );
+      break;
+    case ( 5 ) :
+      error = handleBitfieldMessage( this, torrent );
+      break;
+    case ( 6 ) :
+      error = handleRequestMessage( this, torrent );
+      break;
+    case ( 7 ) :
+      error = handlePieceMessage( this, torrent );
+      break;
+    case ( 8 ) : // Cancel
+      break;
+    case ( 9 ) : // DHT
+      break;
+    default :
+      error = 1;
+    };
+
+    if ( error ) {
+      destroyPeer( this );
+    }
+    else {
+      // And prepare for the next request
+      this->incomingMessageRemaining = 4;
+      this->incomingMessageOffset = 0;
+      this->readingHeader = 1 ;
+    }
   }
 
 
@@ -753,6 +881,9 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
 void handleWrite( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   int ret;
+
+  printf("Writing to %s:%d\n", this->ipString, this->portNum );
+
   ret = write( this->socket, this->outgoingData->head, this->outgoingData->size );
   if ( ret < 0 ) {
     perror("write");
@@ -766,7 +897,7 @@ void handleWrite( struct peerInfo * this, struct torrentInfo * torrent ) {
 void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   int ret;
-
+  printf("Reading From %s:%d\n", this->ipString, this->portNum );
   ret = read( this->socket, 
 	      &this->incomingMessageData[ this->incomingMessageOffset ], 
 	      this->incomingMessageRemaining );
@@ -800,18 +931,23 @@ void handleActiveFDs( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * 
     peerConnectedToUs( torrent, listeningSock );
   }
 
+  // Iterate twice in case an invalid read message leads us to 
+  // close the socket while we still wanted to write to it.
   for ( i = 0; i < torrent->peerListLen; i ++ ) {
     struct peerInfo * this = &torrent->peerList[i] ;
     if ( this->defined ) {
-
       if ( FD_ISSET( this->socket, readFDs ) ) {
 	handleRead( this, torrent );
       }
+    }
+  }
 
+  for ( i = 0; i < torrent->peerListLen; i ++ ) {
+    struct peerInfo * this = &torrent->peerList[i] ;
+    if ( this->defined ) {
       if ( FD_ISSET( this->socket, writeFDs ) ) {
 	handleWrite( this, torrent );
       }
-
     }
   }
   
@@ -834,13 +970,14 @@ int main(int argc, char ** argv) {
   // We can now start our select loop
   fd_set readFDs, writeFDs;
   struct timeval tv;
-  tv.tv_sec = 10;
-  tv.tv_usec = 0;
 
 
   while ( 1 ) {
     FD_ZERO( &readFDs );
     FD_ZERO( &writeFDs );
+
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
 
     // We always want to accept new connections
     FD_SET( listeningSocket, &readFDs );
@@ -855,7 +992,7 @@ int main(int argc, char ** argv) {
 
     handleActiveFDs( &readFDs, &writeFDs, t, listeningSocket );
     
-
+    printf("Looping again after handling %d fds\n", ret );
 
 
   }
