@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -33,12 +34,31 @@
 #define PEER_LISTEN_PORT 6881
 #define BACKLOG 20
 
+#define MAX_PENDING_SUBCHUNKS 10
+
+struct subChunk {
+
+  int start;
+  int end;
+  int len;
+  int have;
+  int requested;
+  int requestTime;
+
+};
+
+
 struct chunkInfo {
 
   int size;
   int have;
+  int requested; 
   char * data;
+  char * shadow;
+  struct timeval tv;
   char hash[20];
+  int numSubChunks;
+  struct subChunk * subChunks;
 
 };
 
@@ -97,15 +117,18 @@ struct peerInfo {
 
   StringStream * outgoingData ;
 
+  int lastInterestedRequest;
+  int lastWrite;
 
+  int numPendingSubchunks;
 
 };
-
-
 
 void initializePeer( struct peerInfo * thisPtr, struct torrentInfo * torrent );
 void destroyPeer( struct peerInfo * peer ) ;
 int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent , char * handshake) ;
+
+int min( int a, int b ) { return a > b ? b : a; }
 
 void * Malloc( size_t size ) {
 
@@ -247,7 +270,22 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
 			      toRet-> totalSize % toRet->chunkSize 
 			      : toRet->chunkSize ) ;
     toRet->chunks[i].have = 0;
-    toRet->chunks[i].data = NULL;
+    toRet->chunks[i].requested = 0;
+    toRet->chunks[i].data = Malloc( toRet->chunks[i].size ) ;
+
+    int subChunkSize = 1 << 14;
+    int numSubChunks = ( toRet->chunks[i].size + subChunkSize - 1 ) / subChunkSize;
+    toRet->chunks[i].numSubChunks = numSubChunks;
+    toRet->chunks[i].subChunks = Malloc( numSubChunks * sizeof( struct subChunk ) );
+    for ( j = 0; j < numSubChunks; j ++ ) {
+      toRet->chunks[i].subChunks[j].start = j * subChunkSize;
+      toRet->chunks[i].subChunks[j].end   = min( (j+1) * subChunkSize, toRet->chunks[i].size );
+      toRet->chunks[i].subChunks[j].len   = toRet->chunks[i].subChunks[j].end - toRet->chunks[i].subChunks[j].start ;
+      toRet->chunks[i].subChunks[j].have       = 0;
+      toRet->chunks[i].subChunks[j].requested  = 0; 
+      toRet->chunks[i].subChunks[j].requestTime  = 0; 
+    }
+
   }
   free( chunkHashes );
   
@@ -615,6 +653,10 @@ void initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
   
   this->outgoingData = SS_Init();
 
+  this->lastInterestedRequest = 0;
+  this->lastWrite = 0;
+  this->numPendingSubchunks = 0;
+
   return;
 
 }
@@ -683,6 +725,13 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
 
   int maxFD = 0;
 
+  struct timeval tv;
+  if ( gettimeofday( &tv, NULL ) ){
+    perror("gettimeofday");
+    exit(1);
+  }
+
+
   for ( i = 0; i < torrent->peerListLen; i ++ ) {
     if ( torrent->peerList[i].defined ) {
 
@@ -700,7 +749,8 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
       }
 
       // We want to write to anybody who has data pending
-      if ( torrent->peerList[i].outgoingData->size > 0 ) {
+      if ( torrent->peerList[i].outgoingData->size > 0 && 
+	   tv.tv_sec - torrent->peerList[i].lastWrite > 2 ) {
 	FD_SET( torrent->peerList[i].socket, writePtr ) ;
 	if ( maxFD < torrent->peerList[i].socket ) {
 	  maxFD = torrent->peerList[i].socket;
@@ -751,7 +801,7 @@ void sendBitfield( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   return;
 
-  int len = this->haveBlocks->numBytes + 1;
+  int len = htonl(this->haveBlocks->numBytes + 1);
   char id = 5;
   char message[len + 4];
   memcpy( message, &len, 4 );
@@ -886,7 +936,13 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
 
 void handleWrite( struct peerInfo * this, struct torrentInfo * torrent ) {
 
-  int ret;
+  int ret; 
+  struct timeval tv;
+  if ( gettimeofday( &tv, NULL ) ){
+    perror("gettimeofday");
+    exit(1);
+  }
+  this->lastWrite = tv.tv_sec;
 
   printf("Writing to %s:%d\n", this->ipString, this->portNum );
 
@@ -903,7 +959,7 @@ void handleWrite( struct peerInfo * this, struct torrentInfo * torrent ) {
 void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   int ret;
-  //printf("Reading From %s:%d\n", this->ipString, this->portNum );
+  printf("Reading From %s:%d\n", this->ipString, this->portNum );
   ret = read( this->socket, 
 	      &this->incomingMessageData[ this->incomingMessageOffset ], 
 	      this->incomingMessageRemaining );
@@ -921,7 +977,7 @@ void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
   this->incomingMessageRemaining -= ret;
   this->incomingMessageOffset += ret;
 
-  //printf("Have read %d/%d bytes.\n", this->incomingMessageOffset, this->incomingMessageRemaining + this->incomingMessageOffset);
+  printf("Have read %d/%d bytes.\n", this->incomingMessageOffset, this->incomingMessageRemaining + this->incomingMessageOffset);
 
   if ( this->incomingMessageRemaining == 0 ) {
     handleFullMessage( this, torrent );
@@ -958,9 +1014,119 @@ void handleActiveFDs( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * 
       }
     }
   }
-  
+}
+
+void sendInterested( struct peerInfo * p, struct torrentInfo * t ) {
+
+  int len = htonl(1);
+  char id = 2;
+  char msg[5];
+  memcpy( &msg[0], &len, 4 );
+  memcpy( &msg[4], &id, 1 );
+  printf("Send Interested to %s\n", p->ipString);
+  SS_Push( p->outgoingData, msg, 5 );
+  return;
 
 }
+
+void sendPieceRequest( struct peerInfo * p, struct torrentInfo * t , int pieceNum, int subChunkNum ) {
+
+  char request[17];
+
+  struct subChunk sc = t->chunks[pieceNum].subChunks[ subChunkNum ];
+  int tmp = htonl(13);
+  char tmpch = 6;
+  memcpy( &request[0], &tmp, 4 );
+  memcpy( &request[4], &tmpch, 1 );
+  tmp = htonl( pieceNum );
+  memcpy( &request[5], &tmp, 4 );
+  tmp = htonl( sc.start );
+  memcpy( &request[9], &tmp, 4 );
+  tmp = htonl( sc.len );
+  memcpy( &request[13], &tmp, 4 );
+
+  printf("Requesting %d.%d ( %d-%d ) from %s\n", pieceNum, subChunkNum, sc.start, sc.end, p->ipString);
+
+  SS_Push( p->outgoingData, request, 17 );
+
+  p->numPendingSubchunks ++;
+  
+}
+
+
+
+
+void generateMessages( struct torrentInfo * t ) {
+
+  int i,j, k,val, ret;
+
+  val = 0;
+
+  struct timeval cur;
+  ret = gettimeofday( &cur, NULL );
+  if ( ret ) {
+    perror("gettimeofday");
+    exit(1);
+  }
+
+  // If we are choked but they have a piece that 
+  // we don't have, then send them an interest 
+  // message.
+  for ( i = 0; i < t->peerListLen; i ++ ){
+    if ( ! t->peerList[i].defined ) {
+      continue ; // Unused slot
+    }
+    for ( j = 0; j < t->numChunks; j ++ ) {
+      if ( t->peerList[i].numPendingSubchunks >= MAX_PENDING_SUBCHUNKS ) {
+	break; // This peer already has enough outstanding requests
+	// so we don't want to waste time getting more.
+      }
+    
+      if ( ! t->chunks[j].have ) {
+	struct peerInfo* peerPtr = &(t->peerList[i]);
+	if ( ! Bitfield_Get( peerPtr->haveBlocks, j, &val ) && val ) {
+	  // Our peer has this chunk, and we want it.
+	  t->peerList[i].am_interested = 1;
+	  
+	  // This peer is choking us. Tell them we'll download from them if
+	  // they unchoke us.
+	  if ( t->peerList[i].peer_choking && (cur.tv_sec - t->peerList[i].lastInterestedRequest) > 5) {
+	    sendInterested( &t->peerList[i], t );
+	    t->peerList[i].lastInterestedRequest = cur.tv_sec;
+	    break;
+   	  }
+
+	  // This peer is not choking us. Request up to MAX_PENDING_SUBCHUNKS subchunks
+	  // from them.
+	  else if ( ! t->peerList[i].peer_choking ) {
+	    for ( k = 0; k < t->chunks[j].numSubChunks; k ++ ) {
+	      if ( t->peerList[i].numPendingSubchunks >= MAX_PENDING_SUBCHUNKS ) {
+		break;
+	      }
+	      if ( cur.tv_sec - t->chunks[j].subChunks[k].requestTime > 20 ) {
+		sendPieceRequest( &t->peerList[i], t, j, k );
+		t->chunks[j].subChunks[k].requestTime = cur.tv_sec;
+	      }
+	    }
+	  }
+
+	  else { 
+	    // We're choked, we can't ask again to be unchoked,
+	    // and we can't request things while choked.
+	    // So, do nothing. 
+	    break;
+	  }
+
+	    
+	} /* If they have this block */
+      }   /* If we don't have this block */
+
+    } /* For all blocks */
+  }  /* For all peers */
+
+
+}
+
 
 int main(int argc, char ** argv) {
 
@@ -987,6 +1153,9 @@ int main(int argc, char ** argv) {
     tv.tv_sec = 2;
     tv.tv_usec = 0;
 
+
+    generateMessages( t );
+
     // We always want to accept new connections
     FD_SET( listeningSocket, &readFDs );
 
@@ -1000,7 +1169,7 @@ int main(int argc, char ** argv) {
 
     handleActiveFDs( &readFDs, &writeFDs, t, listeningSocket );
     
-    //printf("Looping again after handling %d fds\n", ret );
+    printf("Looping again after handling %d fds\n", ret );
 
 
   }
