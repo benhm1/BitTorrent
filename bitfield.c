@@ -36,9 +36,20 @@ void Bitfield_Destroy( Bitfield * cur ) {
 
 int Bitfield_FromExisting( Bitfield * cur, char * other, int numBytes ) {
 
+  int i;
+
   if ( cur-> numBytes != numBytes ) {
     return -1;
   }
+
+  // Check that all of the bits that should be empty are empty
+  for ( i = cur->numBits; i < cur->numBytes * 8; i ++ ) {
+    if ( cur->buffer[ cur->numBytes - 1 ] && (0x1 << (7-( i % 8 )) ) ) {
+      return -1;
+    }
+  }
+
+
   memcpy( cur->buffer, other, numBytes );
   return 0;
 
