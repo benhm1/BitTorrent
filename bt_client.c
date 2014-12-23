@@ -55,6 +55,7 @@
 #define TRACKER_STARTED 1
 #define TRACKER_STOPPED 2
 #define TRACKER_COMPLETED 3
+#define TRACKER_STATUS 4
 
 #define PEER_LISTEN_PORT 6881
 #define BACKLOG 20
@@ -257,12 +258,15 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
       *endPtr = '\0';
 
       if ( ! strncmp( toRet->trackerDomain,  "http://", 7 ) ) {
+	printf("SAME");
 	char * withoutHTTP = strdup( toRet->trackerDomain + 7 );
 	free( toRet->trackerDomain );
 	toRet->trackerDomain = withoutHTTP;
       }
+      printf("PAST SAME");
 
       printf("Tracker Domain: %s\n", toRet->trackerDomain );
+      fflush(stdout);
 
       toRet->trackerIP = Malloc( 25 * sizeof(char) );
 
@@ -532,6 +536,8 @@ char * parseTrackerResponse( struct torrentInfo * torrent, char * response, int 
 
   int i,j;
 
+
+
   // Find the number of bytes designated to peers
   char * peerListPtr = strstr( response, "5:peers" );
   if ( ! peerListPtr ) {
@@ -555,6 +561,34 @@ char * parseTrackerResponse( struct torrentInfo * torrent, char * response, int 
     return NULL;
   }
 
+
+  char * intervalPtr = strstr( response, "8:intervali" );
+  if ( ! intervalPtr ) {
+    return NULL;
+  }
+  char *  intervalPtrStart = intervalPtr + strlen( "8:intervali" );
+  char * intervalPtrEnd = strchr( intervalPtrStart, 'e' );
+  if ( ! intervalPtrEnd ) {
+    return NULL;
+  }
+  *intervalPtrEnd = '\0';
+  int interval = atoi( intervalPtrStart );
+  *intervalPtrEnd = 'e';
+
+  if (torrent->trackerConnection->waitTime < 0 ) {
+    torrent->trackerConnection->waitTime = 30; //interval;
+    printf("Tracker interval wait time: %d\n", interval );
+  }
+
+  struct timeval tv;
+  if ( gettimeofday( &tv, NULL ) ) {
+    perror("gettimeofday");
+    exit(1);
+  }
+  torrent->trackerConnection->lastRequestTime = tv.tv_sec;
+
+
+  printf("Parsing complete response from tracker %s\n", response );
 
   unsigned char ip[4];
   uint16_t portBytes;
@@ -605,10 +639,15 @@ char * parseTrackerResponse( struct torrentInfo * torrent, char * response, int 
 
 
     if ( connectToPeer( this, torrent, handshake ) ) {
+      printf("Initializing %s:%u - FAILED\n", 
+	     this->ipString, (int)this->portNum );
+      
       logToFile( torrent, "Initializing %s:%u - FAILED\n", 
 		 this->ipString, (int)this->portNum );
     }
     else {  
+      printf("Initializing %s:%u - SUCCESS\n", 
+		 this->ipString, (int)this->portNum );
       logToFile( torrent, 
 		 "Initializing %s:%u - SUCCESS\n", this->ipString, (int)this->portNum );
     }
@@ -1171,6 +1210,19 @@ int handlePieceMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
     free( torrent->chunks[idx].subChunks );
     free( torrent->chunks[idx].data );
     torrent->chunks[idx].data = &torrent->fileData[ idx * torrent->chunkSize ];
+  
+    // Are we done downloading the entire torrent?
+    int j;
+    for ( j = 0; j < torrent->numChunks; j ++ ) {
+      if ( ! torrent->chunks[j].have ) {
+	return 0;
+      }
+    }
+    // Yes, we are!
+    char * request = createTrackerMessage( torrent, TRACKER_COMPLETED );
+    SS_Push( torrent->trackerConnection->out, request, strlen(request) );    
+    printf("Sending message to tracker ... \n");
+    free( request );
   }
 
   return 0;
@@ -1394,7 +1446,7 @@ void handleTrackerIO( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * 
     }
     else if ( ret == 0 ) { }
     else {
-      printf("Read %d bytes - %s\n", ret, torrent->trackerConnection->in->head );
+      printf("Received response from tracker server\n");
 
       SS_Push( torrent->trackerConnection->in, trackerResp, ret );
       char * donePtr;
@@ -1508,6 +1560,18 @@ void generateMessages( struct torrentInfo * t ) {
   if ( ret ) {
     perror("gettimeofday");
     exit(1);
+  }
+
+  // If we haven't sent anything to the tracker
+  // recently, then send them an update
+  if ( t->trackerConnection->waitTime >= 0 &&
+       cur.tv_sec - t->trackerConnection->lastRequestTime > 
+       t->trackerConnection->waitTime ) {
+    t->trackerConnection->lastRequestTime = cur.tv_sec;
+    char * request = createTrackerMessage( t, TRACKER_STATUS );
+    SS_Push( t->trackerConnection->out, request, strlen(request) );    
+    printf("Sending message to tracker ... \n");
+    free( request );
   }
 
   // If we are choked but they have a piece that 
