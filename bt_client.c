@@ -347,7 +347,7 @@ int trackerAnnounce( struct torrentInfo * torrent ) {
   int left = torrent->totalSize;
   
 
-  snprintf(request, 1023, "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=0&no_peer_id=0&event=started&numwant=3 HTTP/1.1\r\nHost: %s:6969\r\n\r\n", infoHash, peerID, PEER_LISTEN_PORT , uploaded, downloaded, left, torrent-> trackerDomain);
+  snprintf(request, 1023, "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=0&no_peer_id=0&event=started&numwant=50 HTTP/1.1\r\nHost: %s:6969\r\n\r\n", infoHash, peerID, PEER_LISTEN_PORT , uploaded, downloaded, left, torrent-> trackerDomain);
 
   printf("REQUEST\n\n%s\n\n", request );
 
@@ -792,7 +792,66 @@ int handleRequestMessage( struct peerInfo * this, struct torrentInfo * torrent )
 }
 
 
+void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {
+  // TODO
+  return;
+}
+
 int handlePieceMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
+
+  printf("Received Piece Message: %s:%d \n", this->ipString, this->portNum );
+  
+  int idx;
+  memcpy( &idx, &this->incomingMessageData[5], 4 );
+  idx = ntohl( idx );
+
+  int offset;
+  memcpy( &offset, &this->incomingMessageData[9], 4 );
+  offset = ntohl( offset );
+
+  int messageLen;
+  memcpy( &messageLen, &this->incomingMessageData[0], 4 );
+  messageLen = ntohl( messageLen );
+
+  int dataLen = messageLen - 9;
+
+  // Find the subchunk that we have just received
+  struct subChunk sc = torrent->chunks[idx].subChunks[ offset / (1 << 14) ];
+  if ( sc.start == offset && sc.len == dataLen ) {
+    printf("Received chunk %d.%d / %d\n", idx, offset / ( 1 << 14 ), 
+	   torrent->chunks[idx].numSubChunks);
+    torrent->chunks[idx].subChunks[ offset / (1 << 14) ].have = 1;
+  }
+
+  memcpy( & torrent->chunks[idx].data[ offset ], 
+	  & this->incomingMessageData[13], 
+	  dataLen );
+  
+  int i;
+  for ( i = 0; i < torrent->chunks[idx].numSubChunks; i ++ ) {
+    if ( torrent->chunks[idx].subChunks[i].have == 0 ) {
+      return 0;
+    }
+  }
+
+  // If we get here, then we have all of the subchunks
+  // Check the SHA1 hash of the block and if its good, 
+  // then broadcast a HAVE message to all our peers.
+  unsigned char * hash = computeSHA1( torrent->chunks[idx].data, 
+				      torrent->chunks[idx].size );
+  if ( memcmp( hash, torrent->chunks[idx].hash, 20 ) ) {
+    printf("Invalid SHA1 Hash for block %d.\n", idx);
+    for ( i = 0; i < torrent->chunks[idx].numSubChunks; i ++ ) {
+      torrent->chunks[idx].subChunks[i].have = 0;
+    }
+  } 
+  else {
+    printf("Finished downloading block %d.\n", idx);
+    broadcastHaveMessage( torrent, idx );
+  }
+
+  sleep(1);
+  
 
   return 0;
 }
@@ -959,11 +1018,17 @@ void handleWrite( struct peerInfo * this, struct torrentInfo * torrent ) {
 void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   int ret;
-  printf("Reading From %s:%d\n", this->ipString, this->portNum );
+  //printf("Reading From %s:%d\n", this->ipString, this->portNum );
   ret = read( this->socket, 
 	      &this->incomingMessageData[ this->incomingMessageOffset ], 
 	      this->incomingMessageRemaining );
   if ( ret < 0 ) {
+
+    if ( errno == ECONNRESET ) {
+      printf("Connection from %s:%u was forcibly reset.\n", this->ipString, this->portNum );
+      destroyPeer(this);
+      return;
+    }
     perror( "read" );
     exit(1);
   }
@@ -977,7 +1042,7 @@ void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
   this->incomingMessageRemaining -= ret;
   this->incomingMessageOffset += ret;
 
-  printf("Have read %d/%d bytes.\n", this->incomingMessageOffset, this->incomingMessageRemaining + this->incomingMessageOffset);
+  //printf("Have read %d/%d bytes.\n", this->incomingMessageOffset, this->incomingMessageRemaining + this->incomingMessageOffset);
 
   if ( this->incomingMessageRemaining == 0 ) {
     handleFullMessage( this, torrent );
