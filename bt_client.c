@@ -22,7 +22,7 @@
 #include <unistd.h>
 #include <errno.h>
 
-#define _GNU_SOURCE  // fallocate
+
 #include <fcntl.h>
 
 
@@ -51,6 +51,10 @@
 
 #define BT_PEER 1
 #define BT_SEED 2
+
+#define TRACKER_STARTED 1
+#define TRACKER_STOPPED 2
+#define TRACKER_COMPLETED 3
 
 #define PEER_LISTEN_PORT 6881
 #define BACKLOG 20
@@ -82,6 +86,17 @@ struct chunkInfo {
   struct subChunk * subChunks;
 
 };
+
+struct trackerInfo {
+
+  int socket;
+  int lastRequestTime;
+  int waitTime;
+  StringStream * in;
+  StringStream * out;
+
+};
+
 
 struct torrentInfo {
 
@@ -122,6 +137,10 @@ struct torrentInfo {
   unsigned long long timer;
   
   FILE * logFile;
+
+  struct trackerInfo * trackerConnection;
+
+  Bitfield * ourBitfield;
 
 };
 
@@ -165,6 +184,10 @@ struct peerInfo {
 void initializePeer( struct peerInfo * thisPtr, struct torrentInfo * torrent );
 void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) ;
 int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent , char * handshake) ;
+int getFreeSlot( struct torrentInfo * torrent ) ;
+void initializeTracker( struct torrentInfo * torrent );
+char * createTrackerMessage( struct torrentInfo * torrent, int msgType );
+
 
 int min( int a, int b ) { return a > b ? b : a; }
 
@@ -318,7 +341,11 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
     }
 
   }
+
+  // Initialize our bitfield
+  toRet->ourBitfield = Bitfield_Init( toRet->numChunks );
   free( chunkHashes );
+
   
 
   // Finally, read in the info dictionary so that we can compute the hash
@@ -391,9 +418,55 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
   
   toRet->timer = tv.tv_sec * 1000000 + tv.tv_usec;
 
+  // Initialize our Tracker Conneciton Info
+  toRet->trackerConnection = Malloc( sizeof(struct trackerInfo)); 
+
+  initializeTracker( toRet );
+  char * request = createTrackerMessage( toRet, TRACKER_STARTED );
+
+  SS_Push( toRet->trackerConnection->out, request, strlen(request) );
+
+  toRet->peerList = Malloc( 30 * sizeof( struct peerInfo ) );
+  toRet->peerListLen = 30;
+  for ( i = 0; i < 30; i ++ ) {
+    toRet->peerList[i].defined = 0;
+  }
+
+  free( request );
+
   return toRet;
 
 }
+
+
+void initializeTracker( struct torrentInfo * torrent ) {
+
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if ( sock < 0 ) {
+    perror( "socket");
+    exit(1);
+  }
+
+  struct sockaddr_in addr;
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons( 6969 );
+  addr.sin_addr.s_addr = inet_addr( torrent->trackerIP );
+
+  int res = connect( sock, (struct sockaddr*) &addr, sizeof(addr) );
+  if ( res < 0 ) {
+    perror("connect");
+    exit(1);
+  }
+
+  torrent->trackerConnection->socket = sock;
+  torrent->trackerConnection->lastRequestTime = 0;
+  torrent->trackerConnection->waitTime = -1;
+  torrent->trackerConnection->in = SS_Init();
+  torrent->trackerConnection->out = SS_Init(); 
+
+}
+
+
 
 void logToFile( struct torrentInfo * torrent, const char * format, ... ) {
   
@@ -417,25 +490,7 @@ void logToFile( struct torrentInfo * torrent, const char * format, ... ) {
 
 }
 
-int trackerAnnounce( struct torrentInfo * torrent ) {
-  int i;
-
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if ( sock < 0 ) {
-    perror( "socket");
-    exit(1);
-  }
-
-  struct sockaddr_in addr;
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons( 6969 );
-  addr.sin_addr.s_addr = inet_addr( torrent->trackerIP );
-
-  int res = connect( sock, (struct sockaddr*) &addr, sizeof(addr) );
-  if ( res < 0 ) {
-    perror("connect");
-    exit(1);
-  }
+char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 
   char * request = Malloc( 1024 * sizeof(char)) ;
   request[1023] = '\0';
@@ -443,13 +498,134 @@ int trackerAnnounce( struct torrentInfo * torrent ) {
   char * infoHash = percentEncode( torrent->infoHash, 20 );
   char * peerID = percentEncode( torrent->peerID, 20 );
   // TODO :: Dynamically generate these from the file blocks
-  int uploaded = 0;
-  int downloaded = 0;
-  int left = torrent->totalSize;
+  int uploaded = torrent->numBytesUploaded;
+  int downloaded = torrent->numBytesDownloaded;
+  int left = torrent->totalSize - torrent->numBytesDownloaded;
   
+  char event[32];
+  if ( msgType == TRACKER_STARTED ) {
+    strncpy( event, "&event=started", 31 );
+  }
+  else if ( msgType == TRACKER_STOPPED ) {
+    strncpy( event, "&event=stopped", 31 );
+  }
+  else if ( msgType == TRACKER_COMPLETED ) {
+    strncpy( event, "&event=completed", 31 );
+  }
+  else {
+    event[0] = '\0';
+  }
 
-  snprintf(request, 1023, "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=0&no_peer_id=0&event=started&numwant=50 HTTP/1.1\r\nHost: %s:6969\r\n\r\n", infoHash, peerID, PEER_LISTEN_PORT , uploaded, downloaded, left, torrent-> trackerDomain);
 
+  snprintf(request, 1023, 
+	   "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=1&no_peer_id=1%s&numwant=50 HTTP/1.1\r\nHost: %s:6969\r\n\r\n", 
+	   infoHash, peerID, PEER_LISTEN_PORT, uploaded, 
+	   downloaded, left, event, torrent-> trackerDomain);
+  free( infoHash );
+  free( peerID );
+
+  return request;
+
+}
+
+char * parseTrackerResponse( struct torrentInfo * torrent, char * response, int responseLen ) {
+
+  int i,j;
+
+  // Find the number of bytes designated to peers
+  char * peerListPtr = strstr( response, "5:peers" );
+  if ( ! peerListPtr ) {
+    return NULL;
+  }
+  peerListPtr += strlen( "5:peers" );
+  
+  char * numEnd = strchr( peerListPtr, ':' );
+  if ( ! numEnd ) {
+    return NULL; 
+  }
+
+  *numEnd = '\0';
+  int numBytes = atoi( peerListPtr );
+  logToFile( torrent, "Number of Bytes of Peers: %d\nNumber of Peers: %d\n", 
+	 numBytes, numBytes / 6 );
+  *numEnd = ':';
+  
+  if ( response + responseLen < numEnd+1+numBytes ) {
+    // We still need more data ...
+    return NULL;
+  }
+
+
+  unsigned char ip[4];
+  uint16_t portBytes;
+
+  peerListPtr = numEnd + 1;
+
+
+  char handshake[68];
+  char tmp = 19;
+  memcpy( &handshake[0], &tmp, 1 );
+  char protocol[20];
+  strncpy( protocol, "BitTorrent protocol", 19 );
+  memcpy( &handshake[1], protocol, 19 );
+  int flags = 0;
+  memcpy( &handshake[20], &flags, 4 );
+  memcpy( &handshake[24], &flags, 4 );
+  memcpy( &handshake[28], torrent->infoHash, 20 );
+  memcpy( &handshake[48], torrent->peerID, 20 );
+
+
+  for ( i = 0; i < numBytes/6; i ++ ) {
+    int newSlot = getFreeSlot( torrent );
+    struct peerInfo * this = &torrent->peerList[ newSlot ];
+
+    // Get IP and port data in the right place
+    memcpy( ip, peerListPtr, 4 );
+    memcpy( &portBytes, peerListPtr + 4, 2 );
+
+    snprintf( this->ipString, 16, "%u.%u.%u.%u", (int)ip[0], (int)ip[1], (int)ip[2], (int)ip[3] );
+    this->portNum = ntohs( portBytes );
+
+    // Before continuing, see if we already have an existing connection with this
+    // host
+    int exists = 0;
+    for( j = 0; j < torrent->peerListLen; j ++ ) {
+      if ( j == newSlot || torrent->peerList[j].defined == 0 ) {
+	continue;
+      }
+      if ( !strcmp( torrent->peerList[j].ipString, this->ipString ) ) {
+	exists = 1;
+	break;
+      }
+    }
+    if ( exists ) {
+      this->defined = 0;
+      break;
+    }
+
+
+    if ( connectToPeer( this, torrent, handshake ) ) {
+      logToFile( torrent, "Initializing %s:%u - FAILED\n", 
+		 this->ipString, (int)this->portNum );
+    }
+    else {  
+      logToFile( torrent, 
+		 "Initializing %s:%u - SUCCESS\n", this->ipString, (int)this->portNum );
+    }
+
+    peerListPtr += 6;
+
+  }
+  return peerListPtr;
+
+}
+
+
+int trackerAnnounce( struct torrentInfo * torrent ) {
+
+  return 0;
+
+  /*
   int send_length = strlen(request);
   int send_count = 0;
   while (send_count < send_length ) {
@@ -473,76 +649,17 @@ int trackerAnnounce( struct torrentInfo * torrent ) {
   logToFile( torrent, "BUFFER \n\n%s\n\n ", buf );
   logToFile( torrent, " Done \n" );
 
-  // Find the number of bytes designated to peers
-  char * peerListPtr = strstr( buf, "5:peers" );
-  if ( ! peerListPtr ) {
-    printf("Error: Response did not contain peers list\n");
-    exit(1);
-  }
-  peerListPtr += strlen( "5:peers" );
-  
-  char * numEnd = strchr( peerListPtr, ':' );
-  if ( ! numEnd ) {
-    printf("Error: Invalid formatting of bencoded compressed peer list\n");
-    exit(1);
-  }
-  *numEnd = '\0';
-  int numBytes = atoi( peerListPtr );
-  logToFile( torrent, "Number of Bytes of Peers: %d\nNumber of Peers: %d\n", 
-	 numBytes, numBytes / 6 );
-  unsigned char ip[4];
-  uint16_t portBytes;
-
-  peerListPtr = numEnd + 1;
-  torrent->peerList = Malloc( (numBytes/6) * sizeof( struct peerInfo ) );
-  torrent->peerListLen = numBytes / 6;
 
 
-  char handshake[68];
-  char tmp = 19;
-  memcpy( &handshake[0], &tmp, 1 );
-  char protocol[20];
-  strncpy( protocol, "BitTorrent protocol", 19 );
-  memcpy( &handshake[1], protocol, 19 );
-  int flags = 0;
-  memcpy( &handshake[20], &flags, 4 );
-  memcpy( &handshake[24], &flags, 4 );
-  memcpy( &handshake[28], torrent->infoHash, 20 );
-  memcpy( &handshake[48], torrent->peerID, 20 );
 
-  for ( i = 0; i < numBytes/6; i ++ ) {
-    struct peerInfo * this = &torrent->peerList[i];
-
-    // Get IP and port data in the right place
-    memcpy( ip, peerListPtr, 4 );
-    memcpy( &portBytes, peerListPtr + 4, 2 );
-
-    snprintf( this->ipString, 16, "%u.%u.%u.%u", (int)ip[0], (int)ip[1], (int)ip[2], (int)ip[3] );
-    this->portNum = ntohs( portBytes );
-
-
-    if ( connectToPeer( this, torrent, handshake ) ) {
-      logToFile( torrent, "Initializing %s:%u - FAILED\n", 
-		 this->ipString, (int)this->portNum );
-    }
-    else {  
-      logToFile( torrent, 
-		 "Initializing %s:%u - SUCCESS\n", this->ipString, (int)this->portNum );
-    }
-
-    peerListPtr += 6;
-
-  }
+  parseTrackerResponse( torrent, buf, num_recv );
   
 
 
   free( request );
-  free( infoHash );
-  free( peerID );
-  
 
   return 0;
-
+  */
 }
 
 void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) {
@@ -553,11 +670,7 @@ void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) {
   else if ( peer->type == BT_SEED ) {
     torrent->numSeeds -= 1;
   }
-  else {
-    printf("Error: Invalid type specified for peer: %s:%d (%d).\n", 
-	   peer->ipString, peer->portNum, peer->type );
-    exit(1);
-  }
+  else { }
 
   close( peer->socket );
   Bitfield_Destroy( peer->haveBlocks );
@@ -788,7 +901,15 @@ void destroyTorrentInfo( struct torrentInfo * t ) {
   free( t->infoHash );
   free( t->peerID );
   free( t->peerList );
-  
+
+  Bitfield_Destroy( t->ourBitfield );
+
+  close( t->trackerConnection->socket );
+  SS_Destroy( t->trackerConnection->in );
+  SS_Destroy( t->trackerConnection->out );
+
+  free( t->trackerConnection );
+
   munmap( t->fileData, t->totalSize );
 
   free( t );
@@ -846,7 +967,6 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
     exit(1);
   }
 
-
   for ( i = 0; i < torrent->peerListLen; i ++ ) {
     if ( torrent->peerList[i].defined ) {
 
@@ -873,6 +993,8 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
       }
     } /* Peer is defined */
   }
+
+
 
   return maxFD ;
 
@@ -1036,6 +1158,8 @@ int handlePieceMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
     logToFile( torrent, "Finished downloading block %d.\n", idx);
     torrent->chunks[idx].have = 1;
     broadcastHaveMessage( torrent, idx );
+    Bitfield_Set( torrent->ourBitfield, idx );
+
 
     // Copy the data to a file, reset our data pointer, and clean up
     // any other state
@@ -1056,12 +1180,12 @@ void sendBitfield( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   return;
 
-  int len = htonl(this->haveBlocks->numBytes + 1);
+  int len = htonl( torrent->ourBitfield->numBytes + 1);
   char id = 5;
   char message[len + 4];
   memcpy( message, &len, 4 );
   memcpy( &message[4], &id, 1 );
-  memcpy( &message[5], this->haveBlocks->buffer, this->haveBlocks->numBytes );
+  memcpy( &message[5], torrent->ourBitfield->buffer, torrent->ourBitfield->numBytes ); 
   SS_Push( this->outgoingData, message, len + 4 );
   return;
 
@@ -1256,6 +1380,52 @@ void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
 
 }
 
+void handleTrackerIO( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * torrent ) {
+
+
+  int ret;
+  if ( FD_ISSET( torrent->trackerConnection->socket, readFDs ) ) {
+    // Get up to 1000 bytes from the tracker
+    char * trackerResp = Malloc( 1000 );
+    ret = read( torrent->trackerConnection->socket, trackerResp, 1000 );
+    if ( ret < 0 ) {
+      perror("read");
+      printf("Error reading from tracker socket.\n");
+    }
+    else if ( ret == 0 ) { }
+    else {
+      printf("Read %d bytes - %s\n", ret, torrent->trackerConnection->in->head );
+
+      SS_Push( torrent->trackerConnection->in, trackerResp, ret );
+      char * donePtr;
+      if ( ( donePtr = parseTrackerResponse( torrent, torrent->trackerConnection->in->head,
+					     torrent->trackerConnection->in->size ) ) ) {
+	int bytesToRemove = donePtr - torrent->trackerConnection->in->head ;
+	SS_Pop( torrent->trackerConnection->in, bytesToRemove );
+      }
+      else {
+	printf("Not enough bytes back from tracker ... %d\n%s\n", 
+	       torrent->trackerConnection->in->size, 
+	       torrent->trackerConnection->in->head ); 
+      }
+
+    }
+  }
+  if ( FD_ISSET( torrent->trackerConnection->socket, writeFDs ) ) {
+    ret = write( torrent->trackerConnection->socket, 
+		 torrent->trackerConnection->out->head ,
+		 torrent->trackerConnection->out->size );
+    if ( ret < 0 ) {
+      perror("write");
+      printf("Error writing to tracker socket.\n");
+    }
+    SS_Pop( torrent->trackerConnection->out, ret );
+  }
+
+  return;
+
+}
+
 void handleActiveFDs( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * torrent, int listeningSock ) {
 
   int i;
@@ -1263,6 +1433,8 @@ void handleActiveFDs( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * 
   if ( FD_ISSET( listeningSock, readFDs ) ) {
     peerConnectedToUs( torrent, listeningSock );
   }
+  
+  handleTrackerIO( readFDs, writeFDs, torrent );
 
   // Iterate twice in case an invalid read message leads us to 
   // close the socket while we still wanted to write to it.
@@ -1453,7 +1625,7 @@ int main(int argc, char ** argv) {
 
   struct torrentInfo * t = processBencodedTorrent( data );
 
-  trackerAnnounce( t ) ;
+  // trackerAnnounce( t ) ;
 
   // By this point, we have a list of peers we are connected to.
   // We can now start our select loop
@@ -1474,8 +1646,19 @@ int main(int argc, char ** argv) {
     // We always want to accept new connections
     FD_SET( listeningSocket, &readFDs );
 
+    // We always want to read from the tracker
+    FD_SET( t->trackerConnection->socket, &readFDs );
+    // If we have pending data for the tracker, send it
+    if ( t->trackerConnection->out->size > 0 ) {
+      FD_SET( t->trackerConnection->socket, &writeFDs );
+    }
+    
+
     int maxFD = setupReadWriteSets( &readFDs, &writeFDs, t );
     
+    maxFD = ( maxFD > listeningSocket ? maxFD : listeningSocket );
+    maxFD = ( maxFD > t->trackerConnection->socket ? maxFD : t->trackerConnection->socket );
+
     ret = select( maxFD + 1, &readFDs, &writeFDs, NULL, &tv );
     if ( ret < 0 ) {
       perror( "select" );
