@@ -33,13 +33,11 @@
 /*
   Todos - 
 
-  Check that bitfield requests only come as the first message
-  Keep track of upload / download stats
-  Handle reading from / writing to file for caching blocks
   Handle keepalive messages and timeout messages.
   Handle interested messages by unchoking, up to a certain limit
-  Handle cancel messages?
   Communicate back with tracker
+
+  Fix log printing
 
 */
 
@@ -49,6 +47,7 @@
 // We sent them a handshake; they should send one back
 #define BT_AWAIT_RESPONSE_HANDSHAKE 3
 #define BT_AWAIT_BITFIELD 4
+#define BT_RUNNING 5
 
 #define BT_PEER 1
 #define BT_SEED 2
@@ -1124,6 +1123,7 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
       this->incomingMessageRemaining = 4;
       this->incomingMessageOffset = 0;
       this->readingHeader = 1 ;
+      this->status = BT_RUNNING;
     }
     else {
       this->incomingMessageData = realloc( this->incomingMessageData, len + 4);
@@ -1161,7 +1161,11 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
       error = handleHaveMessage( this, torrent );
       break;
     case ( 5 ) :
-      error = handleBitfieldMessage( this, torrent );
+      if ( this->status == BT_AWAIT_BITFIELD ) {
+	error = handleBitfieldMessage( this, torrent );
+      } else {
+	error = 1;
+      }
       break;
     case ( 6 ) :
       error = handleRequestMessage( this, torrent );
@@ -1186,7 +1190,9 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
       this->incomingMessageOffset = 0;
       this->readingHeader = 1 ;
     }
+    this->status = BT_RUNNING ;
   }
+
 
 
 }
