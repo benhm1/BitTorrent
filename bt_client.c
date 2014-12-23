@@ -24,6 +24,19 @@
 #include "bitfield.h"
 
 
+/*
+  Todos - 
+
+  Check that bitfield requests only come as the first message
+  Keep track of upload / download stats
+  Handle reading from / writing to file for caching blocks
+  Handle keepalive messages and timeout messages.
+  Handle interested messages by unchoking, up to a certain limit
+  Handle cancel messages?
+  Communicate back with tracker
+
+*/
+
 #define BT_CONNECTED 1
 // They connected to us; we should get a handshake from them
 #define BT_AWAIT_INITIAL_HANDSHAKE 2  
@@ -788,12 +801,39 @@ int handleRequestMessage( struct peerInfo * this, struct torrentInfo * torrent )
   // If we have the block, then break it into chunks and append those requests
   // to this socket's pending queue.
   
+  printf("Received request message!\n");
+
+  // TODO
+
   return 0;
 }
 
 
 void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {
-  // TODO
+
+  int i;
+  char msg[5];
+  int len = htonl(5);
+  char id = 4;
+  memcpy( &msg[0], &len, 4 );
+  memcpy( &msg[4], &id, 1 );
+
+  for ( i = 0; i < torrent->peerListLen; i ++ ) {
+    struct peerInfo * peerPtr = &torrent->peerList[i];
+    if ( peerPtr->defined ) {
+      int val;
+      if ( Bitfield_Get( peerPtr->haveBlocks, blockIdx, &val ) ) {
+	perror("bitfield_get");
+	exit(1);
+      }
+      if ( ! val ) {
+	// Only send them the have message if they don't have
+	// this block already
+	SS_Push( peerPtr->outgoingData, msg, 5 );
+      }
+    }
+  }
+
   return;
 }
 
@@ -804,6 +844,12 @@ int handlePieceMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
   int idx;
   memcpy( &idx, &this->incomingMessageData[5], 4 );
   idx = ntohl( idx );
+
+  if ( torrent->chunks[ idx ].have ) {
+    printf("Warning: Received duplicate message!\n");
+    // This chunk is already finished. No need to continue.
+    return 0;
+  }
 
   int offset;
   memcpy( &offset, &this->incomingMessageData[9], 4 );
@@ -817,16 +863,27 @@ int handlePieceMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   // Find the subchunk that we have just received
   struct subChunk sc = torrent->chunks[idx].subChunks[ offset / (1 << 14) ];
-  if ( sc.start == offset && sc.len == dataLen ) {
-    printf("Received chunk %d.%d / %d\n", idx, offset / ( 1 << 14 ), 
+
+  // Check that we didn't get the chunk from somewhere else in the mean
+  // time
+  if ( ! torrent->chunks[idx].subChunks[ offset / (1 << 14) ].have ) {
+    // Check that this is the right subchunk
+    if ( sc.start == offset && sc.len == dataLen ) {
+      printf("Received chunk %d.%d / %d\n", idx, offset / ( 1 << 14 ), 
+	     torrent->chunks[idx].numSubChunks);
+      torrent->chunks[idx].subChunks[ offset / (1 << 14) ].have = 1;
+    }
+    
+    memcpy( & torrent->chunks[idx].data[ offset ], 
+	    & this->incomingMessageData[13], 
+	    dataLen );
+  } 
+  else {
+    printf("Warning: Received duplicate message %d.%d / %d\n", idx, offset/(1<<14),
 	   torrent->chunks[idx].numSubChunks);
-    torrent->chunks[idx].subChunks[ offset / (1 << 14) ].have = 1;
   }
 
-  memcpy( & torrent->chunks[idx].data[ offset ], 
-	  & this->incomingMessageData[13], 
-	  dataLen );
-  
+  // Are we done downloading this chunk?
   int i;
   for ( i = 0; i < torrent->chunks[idx].numSubChunks; i ++ ) {
     if ( torrent->chunks[idx].subChunks[i].have == 0 ) {
@@ -847,11 +904,10 @@ int handlePieceMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
   } 
   else {
     printf("Finished downloading block %d.\n", idx);
+    torrent->chunks[idx].have = 1;
     broadcastHaveMessage( torrent, idx );
+    
   }
-
-  sleep(1);
-  
 
   return 0;
 }
@@ -1168,7 +1224,8 @@ void generateMessages( struct torrentInfo * t ) {
 	      if ( t->peerList[i].numPendingSubchunks >= MAX_PENDING_SUBCHUNKS ) {
 		break;
 	      }
-	      if ( cur.tv_sec - t->chunks[j].subChunks[k].requestTime > 20 ) {
+	      if ( t->chunks[j].subChunks[k].have == 0 &&
+		   cur.tv_sec - t->chunks[j].subChunks[k].requestTime > 20 ) {
 		sendPieceRequest( &t->peerList[i], t, j, k );
 		t->chunks[j].subChunks[k].requestTime = cur.tv_sec;
 	      }
@@ -1234,7 +1291,7 @@ int main(int argc, char ** argv) {
 
     handleActiveFDs( &readFDs, &writeFDs, t, listeningSocket );
     
-    printf("Looping again after handling %d fds\n", ret );
+    //printf("Looping again after handling %d fds\n", ret );
 
 
   }
