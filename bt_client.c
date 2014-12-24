@@ -199,7 +199,7 @@ handler_t * setupSignals(int signum, handler_t * handler);
 int doTrackerCommunication( struct torrentInfo * t, int type );
 int nonBlockingConnect( char * ip, unsigned short port, int sock ) ;
 int parseTrackerResponse( struct torrentInfo * torrent, char * response, int responseLen );
-
+void sendUnchoke( struct peerInfo * this, struct torrentInfo * t );
 
 int min( int a, int b ) { return a > b ? b : a; }
 
@@ -1438,13 +1438,8 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
       break; 
     case ( 2 ) :       // Interested
       this->peer_interested = 1; 
-      // Send them back an unchoke message.
-      int lenUnchoke = htonl(1);
-      char unchokeID = 2;
-      char msg[5];
-      memmove( &msg[0], &lenUnchoke, 4 );
-      memmove( &msg[4], &unchokeID, 1 );
-      SS_Push( this->outgoingData, msg, 5 );
+      sendUnchoke( this, torrent );
+      printf("%s:%d - INTERESTED\n", this->ipString, this->portNum);
       logToFile( torrent, "%s:%d - INTERESTED\n", this->ipString, this->portNum);
       break; 
     case ( 3 ) :
@@ -1641,6 +1636,18 @@ void sendInterested( struct peerInfo * p, struct torrentInfo * t ) {
   SS_Push( p->outgoingData, msg, 5 );
   return;
 
+}
+
+void sendUnchoke( struct peerInfo * this, struct torrentInfo * t ) {
+  
+  // Send them back an unchoke message.
+  int nlenUnchoke = htonl(1);
+  char unchokeID = 1;
+  char msg[5];
+  memmove( &msg[0], &nlenUnchoke, 4 );
+  memmove( &msg[4], &unchokeID, 1 );
+  SS_Push( this->outgoingData, msg, 5 );
+  return;
 }
 
 void sendPieceRequest( struct peerInfo * p, struct torrentInfo * t , int pieceNum, int subChunkNum ) {
