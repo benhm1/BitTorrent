@@ -30,7 +30,7 @@
 #include "StringStream/StringStream.h"
 #include "bitfield.h"
 
-#define EAGLE_HACK 1
+//#define EAGLE_HACK 1
 
 /*
   Todos - 
@@ -1330,12 +1330,11 @@ int handlePieceMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
 
 void sendBitfield( struct peerInfo * this, struct torrentInfo * torrent ) {
 
-  return;
-
-  int len = htonl( torrent->ourBitfield->numBytes + 1);
+  int len =  torrent->ourBitfield->numBytes + 1;
   char id = 5;
-  char message[len + 4];
-  memcpy( message, &len, 4 );
+  char message[ len + 4];
+  int nlen = htonl( len );
+  memcpy( message, &nlen, 4 );
   memcpy( &message[4], &id, 1 );
   memcpy( &message[5], torrent->ourBitfield->buffer, torrent->ourBitfield->numBytes ); 
   SS_Push( this->outgoingData, message, len + 4 );
