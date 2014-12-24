@@ -36,9 +36,22 @@
   Todos - 
 
   Handle keepalive messages and timeout messages.
-  Handle interested messages by unchoking, up to a certain limit
+
   Parse command line arguments
+  => Save file
+  => Log file
+  => Bind address
+  => Bind port
+  => Node ID
+  => Verbose
+  => Max connections
+
+
   Allow for restarts
+
+  More intelligent selection of pieces - rarest first?
+
+  Better distinction of peers vs seeds?
 
 */
 
