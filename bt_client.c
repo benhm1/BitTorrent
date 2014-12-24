@@ -1434,6 +1434,7 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
       break; 
     case ( 1 ) :       // Unchoke
       this->peer_choking = 0; 
+      printf( "%s:%d - UN CHOKE\n", this->ipString, this->portNum);
       logToFile( torrent, "%s:%d - UN CHOKE\n", this->ipString, this->portNum);
       break; 
     case ( 2 ) :       // Interested
