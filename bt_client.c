@@ -30,15 +30,18 @@
 #include "StringStream/StringStream.h"
 #include "bitfield.h"
 
+#define EAGLE_HACK 1
 
 /*
   Todos - 
 
   Handle keepalive messages and timeout messages.
   Handle interested messages by unchoking, up to a certain limit
-  Communicate back with tracker
 
   Fix log printing
+
+  Parse command line arguments
+  Allow for restarts
 
 */
 
@@ -295,9 +298,34 @@ int doTrackerCommunication( struct torrentInfo * t, int type ) {
     offset += ret;
   }
 
-  // Process the result
+  #ifdef EAGLE_HACK
+
+  // Hack for eagle
+  char fake[128];
+  char * ptr = fake;
+  strncpy( &fake[0], "8:intervali10e5:peers6:", 127);
+  ptr += strlen( fake );
+  char fake1 = 130;
+  memcpy( ptr, &fake1, 1 );
+  fake1 = 58;
+  memcpy( ptr+1, &fake1, 1 );
+  fake1 = 68;
+  memcpy( ptr+2, &fake1, 1 );
+  fake1 = 210;
+  memcpy( ptr+3, &fake1, 1 );
+  short fakePort = htons(6881);
+  memcpy( ptr+4, &fakePort, 2 );
+
+  int fakeLen = ptr + 6 - fake;
+  int delay = parseTrackerResponse( t, fake, fakeLen );
+
+  #else
   int delay = parseTrackerResponse( t, buf, offset );
+  #endif
   
+  
+
+
   return (delay == 0 ? 60 : delay ) ; // If something went wrong, try again in 1 min
   
 
@@ -467,7 +495,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
 
   // Initialize the memory mapped file where we will store results
   mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-  int saveFile = open("/scratch/bmarks1/torrent.download", O_RDWR | O_CREAT | O_TRUNC, mode);
+  int saveFile = open("/local/bmarks1/torrent.download", O_RDWR | O_CREAT | O_TRUNC, mode);
   if ( saveFile < 0 ) {
     perror("open");
     exit(1);
@@ -486,7 +514,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
 
   // Initialize our log file
   FILE * logFile = 
-    fopen("/scratch/bmarks1/torrent.log", "w+" ) ;
+    fopen("/local/bmarks1/torrent.log", "w+" ) ;
   if ( logFile < 0 ) {
     perror("open");
     exit(1);
@@ -517,6 +545,8 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
 
 void logToFile( struct torrentInfo * torrent, const char * format, ... ) {
   
+  return;
+
   va_list args;
   va_start( args, format );
 
@@ -617,8 +647,6 @@ int parseTrackerResponse( struct torrentInfo * torrent, char * response, int res
   *intervalPtrEnd = '\0';
   int interval = atoi( intervalPtrStart );
   *intervalPtrEnd = 'e';
-
-  printf("Parsing complete response from tracker %s\n", response );
 
   unsigned char ip[4];
   uint16_t portBytes;
@@ -737,6 +765,7 @@ void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) {
     torrent->numPeers -= 1;
   }
   else if ( peer->type == BT_SEED ) {
+    printf("Destroying peer: %s:%d\n", peer->ipString, peer->portNum);
     torrent->numSeeds -= 1;
   }
   else { }
@@ -797,6 +826,7 @@ void peerConnectedToUs( struct torrentInfo * torrent, int listenFD ) {
 
   this->status = BT_AWAIT_INITIAL_HANDSHAKE ;
 
+  printf("Accepted Connection from %s:%u\n", this->ipString, (unsigned int)this->portNum );
   logToFile(torrent, "Accepted Connection from %s:%u\n", this->ipString, (unsigned int)this->portNum );
 
   torrent->numPeers += 1;
@@ -834,8 +864,8 @@ int nonBlockingConnect( char * ip, unsigned short port, int sock ) {
     if (errno == EINPROGRESS) { 
       fd_set myset;
       struct timeval tv;
-      tv.tv_sec = 0; 
-      tv.tv_usec = 500000; 
+      tv.tv_sec = 3; 
+      tv.tv_usec = 0;
       FD_ZERO(&myset); 
       FD_SET(sock, &myset); 
       res = select(sock+1, NULL, &myset, NULL, &tv); 
@@ -897,6 +927,8 @@ int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * 
     exit(1);
   }
   
+  printf("Connecting to peer - about to call nonblocking connect %s:%d\n", ip, port);
+
   int error = nonBlockingConnect( ip, port, sock );
 
   if ( ! error ) {
@@ -919,6 +951,8 @@ int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * 
     return -1;
   }
   
+  
+
   this->socket = sock;
 
   initializePeer( this, torrent );
@@ -968,6 +1002,9 @@ void destroyTorrentInfo( ) {
   
   struct torrentInfo * t = globalTorrentInfo;
 
+  // Tell the tracker we're shutting down.
+  doTrackerCommunication( t, TRACKER_STOPPED );
+
   free( t->announceURL );
   free( t->trackerDomain );
   free( t->trackerIP );
@@ -997,7 +1034,9 @@ void destroyTorrentInfo( ) {
   Bitfield_Destroy( t->ourBitfield );
   munmap( t->fileData, t->totalSize );
 
-  fclose( t->logFile );
+  if ( t->logFile ) {
+    fclose( t->logFile );
+  }
 
   free( t );
 
@@ -1066,7 +1105,16 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
       if ( torrent->peerList[i].status == BT_AWAIT_INITIAL_HANDSHAKE ||
 	   torrent->peerList[i].status == BT_AWAIT_RESPONSE_HANDSHAKE ||
 	   1 ) {
+	if ( torrent->peerList[i].status == BT_AWAIT_INITIAL_HANDSHAKE ) {
+	  printf("Waiting for Initial Handshake from %s:%d\n", torrent->peerList[i].ipString, torrent->peerList[i].portNum ); 
+	}
+	if ( torrent->peerList[i].status == BT_AWAIT_RESPONSE_HANDSHAKE ) {
+	  printf("Waiting for Response Handshake from %s:%d\n", torrent->peerList[i].ipString, torrent->peerList[i].portNum ); 
+	}
+
 	FD_SET( torrent->peerList[i].socket, readPtr );
+	//printf("Interestd in reading from %s:%d\n", torrent->peerList[i].ipString, torrent->peerList[i].portNum );
+
 	if ( maxFD < torrent->peerList[i].socket ) {
 	  maxFD = torrent->peerList[i].socket;
 	}
@@ -1076,6 +1124,7 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
       // We want to write to anybody who has data pending
       if ( torrent->peerList[i].outgoingData->size > 0 && 
 	   tv.tv_sec - torrent->peerList[i].lastWrite > 2 ) {
+	printf("Interestd in writing to %s:%d\n", torrent->peerList[i].ipString, torrent->peerList[i].portNum );
 	FD_SET( torrent->peerList[i].socket, writePtr ) ;
 	if ( maxFD < torrent->peerList[i].socket ) {
 	  maxFD = torrent->peerList[i].socket;
@@ -1095,11 +1144,13 @@ int handleHaveMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
   uint32_t blockNum;
   memcpy( &blockNum, &this->incomingMessageData[5], 4 );
   blockNum = ntohl( blockNum );
+  printf("%s:%d HAVE %u\n", this->ipString, this->portNum, blockNum );
   logToFile(torrent, "%s:%d HAVE %u\n", this->ipString, this->portNum, blockNum );
   return Bitfield_Set( this->haveBlocks, blockNum );
 }
 
 int handleBitfieldMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
+  printf("%s:%d BITFIELD\n", this->ipString, this->portNum );
   logToFile( torrent, "%s:%d BITFIELD\n", this->ipString, this->portNum );
   int len;
   memcpy( &len, &this->incomingMessageData[0], 4 );
@@ -1312,15 +1363,27 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
     memcpy( &correct[28], torrent->infoHash, 20 );
     memcpy( &correct[48], torrent->peerID, 20 );
 
-    if ( ! memcmp( correct, this->incomingMessageData, 48 ) ) {
+    if ( memcmp( correct, &this->incomingMessageData[0], 20 ) ||
+	 memcmp( torrent->infoHash, &this->incomingMessageData[28], 20 )  ) {
+      int i;
+      for ( i = 0; i < 20; i ++ ) {
+	printf("%x   should be    %x    %d\n", this->incomingMessageData[i], correct[i], this->incomingMessageData[i] == correct[i] );
+      }
+      for ( i = 28; i < 48; i ++ ) {
+	printf("%x   should be    %x    %d\n", this->incomingMessageData[i], correct[i], this->incomingMessageData[i] == correct[i] );
+      }
+
+      printf("Invalid handshake from %s:%d\n", this->ipString, this->portNum);
       logToFile( torrent, "Invalid handshake from %s:%d\n", this->ipString, this->portNum);
       destroyPeer( this, torrent);
       return;
     }
+    printf("Got handshake from %s:%d\n", this->ipString, this->portNum );
     logToFile( torrent, "Got handshake from %s:%d\n", this->ipString, this->portNum );
 
     if ( this->status == BT_AWAIT_INITIAL_HANDSHAKE ) {
       // Send our handshake back
+      printf("Sending response handshake to %s:%d\n", this->ipString, this->portNum );
       SS_Push( this->outgoingData, correct, 68 );
     } 
 
@@ -1393,6 +1456,7 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
       error = handleHaveMessage( this, torrent );
       break;
     case ( 5 ) :
+      printf("%s:%d - Bitfield\n", this->ipString, this->portNum);
       if ( this->status == BT_AWAIT_BITFIELD ) {
 	error = handleBitfieldMessage( this, torrent );
       } else {
@@ -1414,6 +1478,7 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
     };
 
     if ( error ) {
+      printf("Error handling full message ... \n");
       destroyPeer( this, torrent );
     }
     else {
@@ -1461,6 +1526,7 @@ void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
   if ( ret < 0 ) {
 
     if ( errno == ECONNRESET ) {
+      printf("Connection from %s:%u was forcibly reset.\n", this->ipString, this->portNum );
       logToFile( torrent, "Connection from %s:%u was forcibly reset.\n", this->ipString, this->portNum );
       destroyPeer(this, torrent);
       return;
@@ -1470,6 +1536,7 @@ void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
   }
   if ( 0 == ret ) {
     // Peer closed our connection
+    printf("Connection from %s:%u was closed by peer.\n", this->ipString, (unsigned int) this->portNum );
     logToFile( torrent, "Connection from %s:%u was closed by peer.\n", this->ipString, (unsigned int) this->portNum );
     destroyPeer( this, torrent );
     return ;
