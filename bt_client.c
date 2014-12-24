@@ -594,7 +594,7 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 
 
   snprintf(request, 1023, 
-	   "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=1&no_peer_id=1%s&numwant=2 HTTP/1.1\r\nHost: %s:6969\r\n\r\n", 
+	   "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=1&no_peer_id=1%s&numwant=50 HTTP/1.1\r\nHost: %s:6969\r\n\r\n", 
 	   infoHash, peerID, PEER_LISTEN_PORT, uploaded, 
 	   downloaded, left, event, torrent-> trackerDomain);
   printf("\n%s\n", request );
@@ -889,12 +889,12 @@ int nonBlockingConnect( char * ip, unsigned short port, int sock ) {
 	} 
       }
       else { 
-	fprintf(stderr, "Timeout in select() - Cancelling!\n"); 
+	//fprintf(stderr, "Timeout in select() - Cancelling!\n"); 
 	error = 1;
       }
     } 
     else { 
-      fprintf(stderr, "Error connecting %d - %s\n", errno, strerror(errno)); 
+      //fprintf(stderr, "Error connecting %d - %s\n", errno, strerror(errno)); 
       error = 1;
     } 
   }
@@ -927,8 +927,6 @@ int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * 
     exit(1);
   }
   
-  printf("Connecting to peer - about to call nonblocking connect %s:%d\n", ip, port);
-
   int error = nonBlockingConnect( ip, port, sock );
 
   if ( ! error ) {
@@ -1105,12 +1103,6 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
       if ( torrent->peerList[i].status == BT_AWAIT_INITIAL_HANDSHAKE ||
 	   torrent->peerList[i].status == BT_AWAIT_RESPONSE_HANDSHAKE ||
 	   1 ) {
-	if ( torrent->peerList[i].status == BT_AWAIT_INITIAL_HANDSHAKE ) {
-	  printf("Waiting for Initial Handshake from %s:%d\n", torrent->peerList[i].ipString, torrent->peerList[i].portNum ); 
-	}
-	if ( torrent->peerList[i].status == BT_AWAIT_RESPONSE_HANDSHAKE ) {
-	  printf("Waiting for Response Handshake from %s:%d\n", torrent->peerList[i].ipString, torrent->peerList[i].portNum ); 
-	}
 
 	FD_SET( torrent->peerList[i].socket, readPtr );
 	//printf("Interestd in reading from %s:%d\n", torrent->peerList[i].ipString, torrent->peerList[i].portNum );
@@ -1124,7 +1116,6 @@ int setupReadWriteSets( fd_set * readPtr, fd_set * writePtr, struct torrentInfo 
       // We want to write to anybody who has data pending
       if ( torrent->peerList[i].outgoingData->size > 0 && 
 	   tv.tv_sec - torrent->peerList[i].lastWrite > 2 ) {
-	printf("Interestd in writing to %s:%d\n", torrent->peerList[i].ipString, torrent->peerList[i].portNum );
 	FD_SET( torrent->peerList[i].socket, writePtr ) ;
 	if ( maxFD < torrent->peerList[i].socket ) {
 	  maxFD = torrent->peerList[i].socket;
@@ -1196,13 +1187,6 @@ int handleRequestMessage( struct peerInfo * this, struct torrentInfo * torrent )
   char id = 7;
   memcpy( &header[4], &id, 1 );
   memcpy( &header[5], &this->incomingMessageData[5], 8 );
-  printf("SS Push  PIECE to %s : ", this->ipString );
-  int iter;
-  for ( iter = 0; iter < 10; iter ++ ) {
-    printf( "%x", header[iter] );
-  }
-  printf("\n");
-
   SS_Push( this->outgoingData, header, 13 );
   SS_Push( this->outgoingData, torrent->chunks[idx].data + begin, len );
   torrent->numBytesUploaded += len;
@@ -1233,13 +1217,6 @@ void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {
       if ( ! val ) {
 	// Only send them the have message if they don't have
 	// this block already
-	printf("SS Push HAVE to %s : ", torrent->peerList[i].ipString );
-	int iter;
-	for ( iter = 0; iter < 5; iter ++ ) {
-	  printf( " %x ", msg[iter] );
-	}
-	printf("\n");
-
 	SS_Push( peerPtr->outgoingData, msg, 9 );
       }
     }
@@ -1361,13 +1338,6 @@ void sendBitfield( struct peerInfo * this, struct torrentInfo * torrent ) {
   memcpy( message, &nlen, 4 );
   memcpy( &message[4], &id, 1 );
   memcpy( &message[5], torrent->ourBitfield->buffer, torrent->ourBitfield->numBytes ); 
-  printf("SS Push BITFIELD to %s : ", this->ipString );
-  int iter;
-  for ( iter = 0; iter < 5; iter ++ ) {
-    printf( "%x", message[iter] );
-  }
-  printf("\n");
-
   SS_Push( this->outgoingData, message, len + 4 );
   return;
 
@@ -1395,13 +1365,6 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
 
     if ( memcmp( correct, &this->incomingMessageData[0], 20 ) ||
 	 memcmp( torrent->infoHash, &this->incomingMessageData[28], 20 )  ) {
-      int i;
-      for ( i = 0; i < 20; i ++ ) {
-	printf("%x   should be    %x    %d\n", this->incomingMessageData[i], correct[i], this->incomingMessageData[i] == correct[i] );
-      }
-      for ( i = 28; i < 48; i ++ ) {
-	printf("%x   should be    %x    %d\n", this->incomingMessageData[i], correct[i], this->incomingMessageData[i] == correct[i] );
-      }
 
       printf("Invalid handshake from %s:%d\n", this->ipString, this->portNum);
       logToFile( torrent, "Invalid handshake from %s:%d\n", this->ipString, this->portNum);
@@ -1465,13 +1428,11 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
       break; 
     case ( 1 ) :       // Unchoke
       this->peer_choking = 0; 
-      printf( "%s:%d - UN CHOKE\n", this->ipString, this->portNum);
       logToFile( torrent, "%s:%d - UN CHOKE\n", this->ipString, this->portNum);
       break; 
     case ( 2 ) :       // Interested
       this->peer_interested = 1; 
       sendUnchoke( this, torrent );
-      printf("%s:%d - INTERESTED\n", this->ipString, this->portNum);
       logToFile( torrent, "%s:%d - INTERESTED\n", this->ipString, this->portNum);
       break; 
     case ( 3 ) :
@@ -1482,7 +1443,6 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
       error = handleHaveMessage( this, torrent );
       break;
     case ( 5 ) :
-      printf("%s:%d - Bitfield\n", this->ipString, this->portNum);
       if ( this->status == BT_AWAIT_BITFIELD ) {
 	error = handleBitfieldMessage( this, torrent );
       } else {
@@ -1580,53 +1540,6 @@ void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
   return;
 
 }
-/*
-void handleTrackerIO( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * torrent ) {
-
-
-  int ret;
-  if ( FD_ISSET( torrent->trackerConnection->socket, readFDs ) ) {
-    // Get up to 1000 bytes from the tracker
-    char * trackerResp = Malloc( 1000 );
-    ret = read( torrent->trackerConnection->socket, trackerResp, 1000 );
-    if ( ret < 0 ) {
-      perror("read");
-      printf("Error reading from tracker socket.\n");
-    }
-    else if ( ret == 0 ) { }
-    else {
-      printf("Received response from tracker server\n");
-
-      SS_Push( torrent->trackerConnection->in, trackerResp, ret );
-      char * donePtr;
-      if ( ( donePtr = parseTrackerResponse( torrent, torrent->trackerConnection->in->head,
-					     torrent->trackerConnection->in->size ) ) ) {
-	int bytesToRemove = donePtr - torrent->trackerConnection->in->head ;
-	SS_Pop( torrent->trackerConnection->in, bytesToRemove );
-      }
-      else {
-	printf("Not enough bytes back from tracker ... %d\n%s\n", 
-	       torrent->trackerConnection->in->size, 
-	       torrent->trackerConnection->in->head ); 
-      }
-
-    }
-  }
-  if ( FD_ISSET( torrent->trackerConnection->socket, writeFDs ) ) {
-    ret = write( torrent->trackerConnection->socket, 
-		 torrent->trackerConnection->out->head ,
-		 torrent->trackerConnection->out->size );
-    if ( ret < 0 ) {
-      perror("write");
-      printf("Error writing to tracker socket.\n");
-    }
-    SS_Pop( torrent->trackerConnection->out, ret );
-  }
-
-  return;
-
-}
-*/
 
 void handleActiveFDs( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * torrent, int listeningSock ) {
 
@@ -1665,13 +1578,6 @@ void sendInterested( struct peerInfo * p, struct torrentInfo * t ) {
   memcpy( &msg[0], &len, 4 );
   memcpy( &msg[4], &id, 1 );
   logToFile( t, "Send Interested to %s\n", p->ipString);
-  printf("SS Push INTERESTED to %s : ", p->ipString );
-  int iter;
-  for ( iter = 0; iter < 5; iter ++ ) {
-    printf( "%x", msg[iter] );
-  }
-  printf("\n");
-
   SS_Push( p->outgoingData, msg, 5 );
   return;
 
@@ -1685,13 +1591,6 @@ void sendUnchoke( struct peerInfo * this, struct torrentInfo * t ) {
   char msg[5];
   memmove( &msg[0], &nlenUnchoke, 4 );
   memmove( &msg[4], &unchokeID, 1 );
-  printf("SS Push UNCHOKE to %s : ", this->ipString );
-  int iter;
-  for ( iter = 0; iter < 5; iter ++ ) {
-    printf( "%x", msg[iter] );
-  }
-  printf("\n");
-
   SS_Push( this->outgoingData, msg, 5 );
   return;
 }
@@ -1713,13 +1612,6 @@ void sendPieceRequest( struct peerInfo * p, struct torrentInfo * t , int pieceNu
   memcpy( &request[13], &tmp, 4 );
 
   logToFile( t, "Requesting %d.%d ( %d-%d ) from %s\n", pieceNum, subChunkNum, sc.start, sc.end, p->ipString);
-
-  printf("SS Push REQUEST to %s : ", p->ipString );
-  int iter;
-  for ( iter = 0; iter < 10; iter ++ ) {
-    printf( "%x", request[iter] );
-  }
-  printf("\n");
 
   SS_Push( p->outgoingData, request, 17 );
 
@@ -1909,8 +1801,6 @@ int main(int argc, char ** argv) {
     handleActiveFDs( &readFDs, &writeFDs, t, listeningSocket );
     
     printStatus( t );
-
-    //printf("Looping again after handling %d fds\n", ret );
 
 
   }
