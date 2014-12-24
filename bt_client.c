@@ -37,16 +37,13 @@
 
   Handle keepalive messages and timeout messages.
   Handle interested messages by unchoking, up to a certain limit
-
   Parse command line arguments
   Allow for restarts
 
 */
 
 #define BT_CONNECTED 1
-// They connected to us; we should get a handshake from them
 #define BT_AWAIT_INITIAL_HANDSHAKE 2  
-// We sent them a handshake; they should send one back
 #define BT_AWAIT_RESPONSE_HANDSHAKE 3
 #define BT_AWAIT_BITFIELD 4
 #define BT_RUNNING 5
@@ -91,18 +88,6 @@ struct chunkInfo {
   struct subChunk * subChunks;
 
 };
-
-/*
-struct trackerInfo {
-
-  int socket;
-  int lastRequestTime;
-  int waitTime;
-  StringStream * in;
-  StringStream * out;
-
-};
-*/
 
 struct torrentInfo {
 
@@ -190,14 +175,21 @@ struct torrentInfo * globalTorrentInfo;
 
 void initializePeer( struct peerInfo * thisPtr, struct torrentInfo * torrent );
 void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) ;
-int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent , char * handshake) ;
+int connectToPeer( struct peerInfo * this, 
+		   struct torrentInfo * torrent , 
+		   char * handshake) ;
 int getFreeSlot( struct torrentInfo * torrent ) ;
 char * createTrackerMessage( struct torrentInfo * torrent, int msgType );
 handler_t * setupSignals(int signum, handler_t * handler);
 int doTrackerCommunication( struct torrentInfo * t, int type );
 int nonBlockingConnect( char * ip, unsigned short port, int sock ) ;
-int parseTrackerResponse( struct torrentInfo * torrent, char * response, int responseLen );
+int parseTrackerResponse( struct torrentInfo * torrent, 
+			  char * response, int responseLen );
 void sendUnchoke( struct peerInfo * this, struct torrentInfo * t );
+
+
+
+
 
 int min( int a, int b ) { return a > b ? b : a; }
 
@@ -212,7 +204,16 @@ void * Malloc( size_t size ) {
 }
 
 
-handler_t * setupSignals(int signum, handler_t * handler) {                                struct sigaction action, old_action;                                                     action.sa_handler = handler;                                                             sigemptyset(&action.sa_mask);                                                            action.sa_flags = SA_RESTART;                                                            if (sigaction(signum, &action, &old_action) < 0) {                                         perror("sigaction");                                                                   }                                                                                        return (old_action.sa_handler);                                                        }                  
+handler_t * setupSignals(int signum, handler_t * handler) {  
+  struct sigaction action, old_action; 
+  action.sa_handler = handler;   
+  sigemptyset(&action.sa_mask);  
+  action.sa_flags = SA_RESTART; 
+  if (sigaction(signum, &action, &old_action) < 0) {  
+    perror("sigaction"); 
+  }
+  return (old_action.sa_handler);     
+}  
 
 // Given a hostname, returns its IP address or exits if DNS lookup fails
 void lookupIP( char * hostname, char * IP ) {
@@ -236,9 +237,8 @@ void lookupIP( char * hostname, char * IP ) {
 
 void trackerCheckin( int sig ) {
 
-  int nextCheckin = doTrackerCommunication( globalTorrentInfo, TRACKER_STATUS );
-  // TODO - use real value
-  nextCheckin = 30;
+  int nextCheckin = 
+    doTrackerCommunication( globalTorrentInfo, TRACKER_STATUS );
   alarm( nextCheckin );
   return;
 
@@ -321,8 +321,8 @@ int doTrackerCommunication( struct torrentInfo * t, int type ) {
   
   
 
-
-  return (delay == 0 ? 60 : delay ) ; // If something went wrong, try again in 1 min
+  // If something went wrong, try again in 1 min
+  return (delay == 0 ? 60 : delay ) ; 
   
 
 }
@@ -433,13 +433,17 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
     toRet->chunks[i].data = Malloc( toRet->chunks[i].size ) ;
 
     int subChunkSize = 1 << 14;
-    int numSubChunks = ( toRet->chunks[i].size + subChunkSize - 1 ) / subChunkSize;
+    int numSubChunks = 
+      ( toRet->chunks[i].size + subChunkSize - 1 ) / subChunkSize;
     toRet->chunks[i].numSubChunks = numSubChunks;
-    toRet->chunks[i].subChunks = Malloc( numSubChunks * sizeof( struct subChunk ) );
+    toRet->chunks[i].subChunks = 
+      Malloc( numSubChunks * sizeof( struct subChunk ) );
     for ( j = 0; j < numSubChunks; j ++ ) {
       toRet->chunks[i].subChunks[j].start = j * subChunkSize;
-      toRet->chunks[i].subChunks[j].end   = min( (j+1) * subChunkSize, toRet->chunks[i].size );
-      toRet->chunks[i].subChunks[j].len   = toRet->chunks[i].subChunks[j].end - toRet->chunks[i].subChunks[j].start ;
+      toRet->chunks[i].subChunks[j].end   = 
+	min( (j+1) * subChunkSize, toRet->chunks[i].size );
+      toRet->chunks[i].subChunks[j].len   = 
+	toRet->chunks[i].subChunks[j].end - toRet->chunks[i].subChunks[j].start ;
       toRet->chunks[i].subChunks[j].have       = 0;
       toRet->chunks[i].subChunks[j].requested  = 0; 
       toRet->chunks[i].subChunks[j].requestTime  = 0; 
@@ -487,7 +491,8 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
 
   // Initialize the memory mapped file where we will store results
   mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-  int saveFile = open("/local/bmarks1/torrent.download", O_RDWR | O_CREAT | O_TRUNC, mode);
+  int saveFile = open("/local/bmarks1/torrent.download", 
+		      O_RDWR | O_CREAT | O_TRUNC, mode);
   if ( saveFile < 0 ) {
     perror("open");
     exit(1);
@@ -594,7 +599,8 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 
 }
 
-int parseTrackerResponse( struct torrentInfo * torrent, char * response, int responseLen ) {
+int parseTrackerResponse( struct torrentInfo * torrent, 
+			  char * response, int responseLen ) {
 
   int i,j;
 
@@ -664,11 +670,12 @@ int parseTrackerResponse( struct torrentInfo * torrent, char * response, int res
     memcpy( ip, peerListPtr, 4 );
     memcpy( &portBytes, peerListPtr + 4, 2 );
 
-    snprintf( this->ipString, 16, "%u.%u.%u.%u", (int)ip[0], (int)ip[1], (int)ip[2], (int)ip[3] );
+    snprintf( this->ipString, 16, "%u.%u.%u.%u", 
+	      (int)ip[0], (int)ip[1], (int)ip[2], (int)ip[3] );
     this->portNum = ntohs( portBytes );
 
-    // Before continuing, see if we already have an existing connection with this
-    // host
+    // Before continuing, see if we already have an existing 
+    // connection with this host
     int exists = 0;
     for( j = 0; j < torrent->peerListLen; j ++ ) {
       if ( j == newSlot || torrent->peerList[j].defined == 0 ) {
@@ -691,7 +698,8 @@ int parseTrackerResponse( struct torrentInfo * torrent, char * response, int res
     }
     else {  
       logToFile( torrent, 
-		 "STATUS Initializing %s:%u - SUCCESS\n", this->ipString, (int)this->portNum );
+		 "STATUS Initializing %s:%u - SUCCESS\n", 
+		 this->ipString, (int)this->portNum );
     }
 
     peerListPtr += 6;
@@ -708,7 +716,8 @@ void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) {
     torrent->numPeers -= 1;
   }
   else if ( peer->type == BT_SEED ) {
-    logToFile( torrent, "STATUS Destroying peer: %s:%d\n", peer->ipString, peer->portNum);
+    logToFile( torrent, "STATUS Destroying peer: %s:%d\n", 
+	       peer->ipString, peer->portNum);
     torrent->numSeeds -= 1;
   }
   else { }
@@ -1686,7 +1695,6 @@ void printStatus( struct torrentInfo * t ) {
 
 
 }
-
 
 int main(int argc, char ** argv) {
 
