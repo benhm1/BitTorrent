@@ -19,9 +19,10 @@
 #include <sys/uio.h>
 #include <sys/time.h>
 #include <sys/mman.h>
+#include <sys/signal.h>
 #include <unistd.h>
 #include <errno.h>
-
+#include <signal.h>
 
 #include <fcntl.h>
 
@@ -62,6 +63,8 @@
 
 #define MAX_PENDING_SUBCHUNKS 10
 
+typedef void handler_t(int);
+
 struct subChunk {
 
   int start;
@@ -88,6 +91,7 @@ struct chunkInfo {
 
 };
 
+/*
 struct trackerInfo {
 
   int socket;
@@ -97,7 +101,7 @@ struct trackerInfo {
   StringStream * out;
 
 };
-
+*/
 
 struct torrentInfo {
 
@@ -138,8 +142,6 @@ struct torrentInfo {
   unsigned long long timer;
   
   FILE * logFile;
-
-  struct trackerInfo * trackerConnection;
 
   Bitfield * ourBitfield;
 
@@ -182,12 +184,18 @@ struct peerInfo {
 
 };
 
+// Global variable for signal handling
+struct torrentInfo * globalTorrentInfo;
+
 void initializePeer( struct peerInfo * thisPtr, struct torrentInfo * torrent );
 void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) ;
 int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent , char * handshake) ;
 int getFreeSlot( struct torrentInfo * torrent ) ;
-void initializeTracker( struct torrentInfo * torrent );
 char * createTrackerMessage( struct torrentInfo * torrent, int msgType );
+handler_t * setupSignals(int signum, handler_t * handler);
+int doTrackerCommunication( struct torrentInfo * t, int type );
+int nonBlockingConnect( char * ip, unsigned short port, int sock ) ;
+int parseTrackerResponse( struct torrentInfo * torrent, char * response, int responseLen );
 
 
 int min( int a, int b ) { return a > b ? b : a; }
@@ -201,6 +209,9 @@ void * Malloc( size_t size ) {
   return toRet;
 
 }
+
+
+handler_t * setupSignals(int signum, handler_t * handler) {                                struct sigaction action, old_action;                                                     action.sa_handler = handler;                                                             sigemptyset(&action.sa_mask);                                                            action.sa_flags = SA_RESTART;                                                            if (sigaction(signum, &action, &old_action) < 0) {                                         perror("sigaction");                                                                   }                                                                                        return (old_action.sa_handler);                                                        }                  
 
 // Given a hostname, returns its IP address or exits if DNS lookup fails
 void lookupIP( char * hostname, char * IP ) {
@@ -222,6 +233,75 @@ void lookupIP( char * hostname, char * IP ) {
   freeaddrinfo(result);
 }
 
+void trackerCheckin( int sig ) {
+
+  printf("Communicating with tracker ... \n");
+  int nextCheckin = doTrackerCommunication( globalTorrentInfo, TRACKER_STATUS );
+  // TODO - use real value
+  nextCheckin = 30;
+  alarm( nextCheckin );
+  printf("Done communicating with tracker ...\n");
+  return;
+
+}
+
+int doTrackerCommunication( struct torrentInfo * t, int type ) {
+
+  // Connect to the tracker server
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if ( sock < 0 ) {
+    perror( "socket");
+    exit(1);
+  }
+  
+  int error = nonBlockingConnect( t->trackerIP, 6969, sock );
+  if ( error ) {
+    perror("connect to tracker");
+    return 60;
+  }
+
+  // Craft a message
+  char * request = createTrackerMessage( t , type );
+
+  // Send our message
+  int offset, len, ret;
+  offset = 0;
+  len = strlen( request );
+  while ( offset < len ) {
+    ret = write( sock, &request[offset], len - offset );
+    if ( ret < 0 ) {
+      perror("write to tracker");
+      return 60;
+    }
+    offset += ret;
+  }
+
+  free( request );
+
+  // Receive until we get a disconnect
+  char buf[2048];
+  buf[2047] = '\0';
+  offset = 0;
+  ret = 1;
+  while ( ret > 0 ) {
+    ret = read( sock, &buf[offset], 2047 - offset );
+    if ( ret < 0 ) {
+      perror("read from tracker");
+      return 60;
+    }
+    if ( ret == 0 ) {
+      break;
+    }
+    offset += ret;
+  }
+
+  // Process the result
+  int delay = parseTrackerResponse( t, buf, offset );
+  
+  return (delay == 0 ? 60 : delay ) ; // If something went wrong, try again in 1 min
+  
+
+}
 
 
 unsigned char * computeSHA1( char * data, int size ) {
@@ -422,13 +502,6 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
   
   toRet->timer = tv.tv_sec * 1000000 + tv.tv_usec;
 
-  // Initialize our Tracker Conneciton Info
-  toRet->trackerConnection = Malloc( sizeof(struct trackerInfo)); 
-
-  initializeTracker( toRet );
-  char * request = createTrackerMessage( toRet, TRACKER_STARTED );
-
-  SS_Push( toRet->trackerConnection->out, request, strlen(request) );
 
   toRet->peerList = Malloc( 30 * sizeof( struct peerInfo ) );
   toRet->peerListLen = 30;
@@ -436,37 +509,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
     toRet->peerList[i].defined = 0;
   }
 
-  free( request );
-
   return toRet;
-
-}
-
-
-void initializeTracker( struct torrentInfo * torrent ) {
-
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if ( sock < 0 ) {
-    perror( "socket");
-    exit(1);
-  }
-
-  struct sockaddr_in addr;
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons( 6969 );
-  addr.sin_addr.s_addr = inet_addr( torrent->trackerIP );
-
-  int res = connect( sock, (struct sockaddr*) &addr, sizeof(addr) );
-  if ( res < 0 ) {
-    perror("connect");
-    exit(1);
-  }
-
-  torrent->trackerConnection->socket = sock;
-  torrent->trackerConnection->lastRequestTime = 0;
-  torrent->trackerConnection->waitTime = -1;
-  torrent->trackerConnection->in = SS_Init();
-  torrent->trackerConnection->out = SS_Init(); 
 
 }
 
@@ -501,7 +544,6 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 
   char * infoHash = percentEncode( torrent->infoHash, 20 );
   char * peerID = percentEncode( torrent->peerID, 20 );
-  // TODO :: Dynamically generate these from the file blocks
   int uploaded = torrent->numBytesUploaded;
   int downloaded = torrent->numBytesDownloaded;
   int left = torrent->totalSize - torrent->numBytesDownloaded;
@@ -525,6 +567,7 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 	   "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=1&no_peer_id=1%s&numwant=50 HTTP/1.1\r\nHost: %s:6969\r\n\r\n", 
 	   infoHash, peerID, PEER_LISTEN_PORT, uploaded, 
 	   downloaded, left, event, torrent-> trackerDomain);
+  printf("\n%s\n", request );
   free( infoHash );
   free( peerID );
 
@@ -532,7 +575,7 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 
 }
 
-char * parseTrackerResponse( struct torrentInfo * torrent, char * response, int responseLen ) {
+int parseTrackerResponse( struct torrentInfo * torrent, char * response, int responseLen ) {
 
   int i,j;
 
@@ -541,13 +584,13 @@ char * parseTrackerResponse( struct torrentInfo * torrent, char * response, int 
   // Find the number of bytes designated to peers
   char * peerListPtr = strstr( response, "5:peers" );
   if ( ! peerListPtr ) {
-    return NULL;
+    return 0;
   }
   peerListPtr += strlen( "5:peers" );
   
   char * numEnd = strchr( peerListPtr, ':' );
   if ( ! numEnd ) {
-    return NULL; 
+    return 0; 
   }
 
   *numEnd = '\0';
@@ -558,35 +601,22 @@ char * parseTrackerResponse( struct torrentInfo * torrent, char * response, int 
   
   if ( response + responseLen < numEnd+1+numBytes ) {
     // We still need more data ...
-    return NULL;
+    return 0;
   }
 
 
   char * intervalPtr = strstr( response, "8:intervali" );
   if ( ! intervalPtr ) {
-    return NULL;
+    return 0;
   }
   char *  intervalPtrStart = intervalPtr + strlen( "8:intervali" );
   char * intervalPtrEnd = strchr( intervalPtrStart, 'e' );
   if ( ! intervalPtrEnd ) {
-    return NULL;
+    return 0;
   }
   *intervalPtrEnd = '\0';
   int interval = atoi( intervalPtrStart );
   *intervalPtrEnd = 'e';
-
-  if (torrent->trackerConnection->waitTime < 0 ) {
-    torrent->trackerConnection->waitTime = 30; //interval;
-    printf("Tracker interval wait time: %d\n", interval );
-  }
-
-  struct timeval tv;
-  if ( gettimeofday( &tv, NULL ) ) {
-    perror("gettimeofday");
-    exit(1);
-  }
-  torrent->trackerConnection->lastRequestTime = tv.tv_sec;
-
 
   printf("Parsing complete response from tracker %s\n", response );
 
@@ -655,7 +685,7 @@ char * parseTrackerResponse( struct torrentInfo * torrent, char * response, int 
     peerListPtr += 6;
 
   }
-  return peerListPtr;
+  return interval;
 
 }
 
@@ -774,24 +804,10 @@ void peerConnectedToUs( struct torrentInfo * torrent, int listenFD ) {
 
   return ;
 
-
-
 }
 
-int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * handshake) {
+int nonBlockingConnect( char * ip, unsigned short port, int sock ) {
 
-  int res;
-
-  char * ip = this->ipString;
-  unsigned short port = this->portNum;
-
-  // Set up our socket
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if ( sock < 0 ) {
-    perror( "socket");
-    exit(1);
-  }
-  
   struct sockaddr_in addr;
   addr.sin_family = AF_INET;
   addr.sin_port = htons( port ); 
@@ -799,7 +815,7 @@ int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * 
  
   // Set socket to nonblocking for connect, in case it fails
   int flags = fcntl( sock, F_GETFL );
-  res = fcntl(sock, F_SETFL, O_NONBLOCK);  // set to non-blocking
+  int res = fcntl(sock, F_SETFL, O_NONBLOCK);  // set to non-blocking
   if ( res < 0 ) {
     perror("fcntl");
     exit(1);
@@ -853,6 +869,36 @@ int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * 
     } 
   }
 
+
+  // And, make it blocking again
+  res = fcntl( sock, F_SETFL, flags );
+  if ( res < 0 ) {
+    perror("fcntl set blocking");
+    exit(1);
+  }
+
+
+  return error;
+
+}
+
+
+int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * handshake) {
+
+  int res;
+
+  char * ip = this->ipString;
+  unsigned short port = this->portNum;
+
+  // Set up our socket
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if ( sock < 0 ) {
+    perror( "socket");
+    exit(1);
+  }
+  
+  int error = nonBlockingConnect( ip, port, sock );
+
   if ( ! error ) {
 
     res = write( sock, handshake, 68 );
@@ -865,9 +911,7 @@ int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * 
       exit(1);
     }
   }
-
-
-  if ( error ) {
+  else {
     // Just get rid of this slot
     perror("connect");
     this->defined = 0;
@@ -875,15 +919,6 @@ int connectToPeer( struct peerInfo * this, struct torrentInfo * torrent, char * 
     return -1;
   }
   
-
-
-  // And, make it blocking again
-  res = fcntl( sock, F_SETFL, flags );
-  if ( res < 0 ) {
-    perror("fcntl set blocking");
-    exit(1);
-  }
-
   this->socket = sock;
 
   initializePeer( this, torrent );
@@ -929,11 +964,29 @@ void initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
 
 
 
-void destroyTorrentInfo( struct torrentInfo * t ) {
+void destroyTorrentInfo( ) { 
+  
+  struct torrentInfo * t = globalTorrentInfo;
 
   free( t->announceURL );
   free( t->trackerDomain );
   free( t->trackerIP );
+
+  int i;
+  for ( i = 0; i < t->numChunks; i ++ ) {
+    if (! t->chunks[i].have )  {
+      free( t->chunks[i].data );
+      free( t->chunks[i].subChunks );
+    }
+  }
+
+  for ( i = 0; i < t->peerListLen; i ++ ) {
+    if ( t->peerList[i].defined ) {
+      destroyPeer( &t->peerList[i], t );
+    }
+  }
+
+
   free( t->chunks );
   free( t->name );
   free( t->comment );
@@ -942,17 +995,15 @@ void destroyTorrentInfo( struct torrentInfo * t ) {
   free( t->peerList );
 
   Bitfield_Destroy( t->ourBitfield );
-
-  close( t->trackerConnection->socket );
-  SS_Destroy( t->trackerConnection->in );
-  SS_Destroy( t->trackerConnection->out );
-
-  free( t->trackerConnection );
-
   munmap( t->fileData, t->totalSize );
+
+  fclose( t->logFile );
 
   free( t );
 
+  printf("Have a nice day!\n");
+  exit(1);
+    
   return;
 
 }
@@ -1187,12 +1238,14 @@ int handlePieceMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
   unsigned char * hash = computeSHA1( torrent->chunks[idx].data, 
 				      torrent->chunks[idx].size );
   if ( memcmp( hash, torrent->chunks[idx].hash, 20 ) ) {
+    free( hash );
     logToFile( torrent, "Invalid SHA1 Hash for block %d.\n", idx);
     for ( i = 0; i < torrent->chunks[idx].numSubChunks; i ++ ) {
       torrent->chunks[idx].subChunks[i].have = 0;
     }
   } 
   else {
+    free( hash );
     printf("Finished downloading block %d.\n", idx);
     logToFile( torrent, "Finished downloading block %d.\n", idx);
     torrent->chunks[idx].have = 1;
@@ -1219,12 +1272,8 @@ int handlePieceMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
       }
     }
     // Yes, we are!
-    char * request = createTrackerMessage( torrent, TRACKER_COMPLETED );
-    SS_Push( torrent->trackerConnection->out, request, strlen(request) );    
-    printf("Sending message to tracker ... \n");
-    free( request );
+    doTrackerCommunication( torrent, TRACKER_COMPLETED );
   }
-
   return 0;
 }
 
@@ -1327,6 +1376,13 @@ void handleFullMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
       break; 
     case ( 2 ) :       // Interested
       this->peer_interested = 1; 
+      // Send them back an unchoke message.
+      int lenUnchoke = htonl(1);
+      char unchokeID = 2;
+      char msg[5];
+      memmove( &msg[0], &lenUnchoke, 4 );
+      memmove( &msg[4], &unchokeID, 1 );
+      SS_Push( this->outgoingData, msg, 5 );
       logToFile( torrent, "%s:%d - INTERESTED\n", this->ipString, this->portNum);
       break; 
     case ( 3 ) :
@@ -1431,7 +1487,7 @@ void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
   return;
 
 }
-
+/*
 void handleTrackerIO( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * torrent ) {
 
 
@@ -1477,6 +1533,7 @@ void handleTrackerIO( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * 
   return;
 
 }
+*/
 
 void handleActiveFDs( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * torrent, int listeningSock ) {
 
@@ -1486,8 +1543,6 @@ void handleActiveFDs( fd_set * readFDs, fd_set * writeFDs, struct torrentInfo * 
     peerConnectedToUs( torrent, listeningSock );
   }
   
-  handleTrackerIO( readFDs, writeFDs, torrent );
-
   // Iterate twice in case an invalid read message leads us to 
   // close the socket while we still wanted to write to it.
   for ( i = 0; i < torrent->peerListLen; i ++ ) {
@@ -1562,17 +1617,6 @@ void generateMessages( struct torrentInfo * t ) {
     exit(1);
   }
 
-  // If we haven't sent anything to the tracker
-  // recently, then send them an update
-  if ( t->trackerConnection->waitTime >= 0 &&
-       cur.tv_sec - t->trackerConnection->lastRequestTime > 
-       t->trackerConnection->waitTime ) {
-    t->trackerConnection->lastRequestTime = cur.tv_sec;
-    char * request = createTrackerMessage( t, TRACKER_STATUS );
-    SS_Push( t->trackerConnection->out, request, strlen(request) );    
-    printf("Sending message to tracker ... \n");
-    free( request );
-  }
 
   // If we are choked but they have a piece that 
   // we don't have, then send them an interest 
@@ -1684,10 +1728,21 @@ int main(int argc, char ** argv) {
   int ret;
 
   be_node* data = load_be_node( argv[1] );
+  
 
   int listeningSocket = setupListeningSocket();
 
   struct torrentInfo * t = processBencodedTorrent( data );
+  be_free( data );
+
+  globalTorrentInfo = t;
+
+  doTrackerCommunication( t, TRACKER_STARTED );
+
+  setupSignals( SIGALRM, trackerCheckin );
+  setupSignals( SIGINT, destroyTorrentInfo );
+
+  alarm( 30 );
 
   // trackerAnnounce( t ) ;
 
@@ -1708,23 +1763,19 @@ int main(int argc, char ** argv) {
     generateMessages( t );
 
     // We always want to accept new connections
-    FD_SET( listeningSocket, &readFDs );
-
-    // We always want to read from the tracker
-    FD_SET( t->trackerConnection->socket, &readFDs );
-    // If we have pending data for the tracker, send it
-    if ( t->trackerConnection->out->size > 0 ) {
-      FD_SET( t->trackerConnection->socket, &writeFDs );
-    }
-    
+    FD_SET( listeningSocket, &readFDs );    
 
     int maxFD = setupReadWriteSets( &readFDs, &writeFDs, t );
     
     maxFD = ( maxFD > listeningSocket ? maxFD : listeningSocket );
-    maxFD = ( maxFD > t->trackerConnection->socket ? maxFD : t->trackerConnection->socket );
+
 
     ret = select( maxFD + 1, &readFDs, &writeFDs, NULL, &tv );
     if ( ret < 0 ) {
+      if ( errno == EINTR ) {
+	// We handled tracker communication while waiting here
+	continue;
+      }
       perror( "select" );
       exit(1);
     }
@@ -1738,13 +1789,11 @@ int main(int argc, char ** argv) {
 
   }
 
-
+  // Never get here
 
 
   close( listeningSocket );
-  destroyTorrentInfo( t );
-  be_dump( data );
-  be_free( data );
+
 
   return 0;
 
