@@ -30,7 +30,7 @@
 #include "StringStream/StringStream.h"
 #include "bitfield.h"
 
-//#define EAGLE_HACK 1
+#define EAGLE_HACK 1
 
 /*
   Todos - 
@@ -298,33 +298,7 @@ int doTrackerCommunication( struct torrentInfo * t, int type ) {
     offset += ret;
   }
 
-  #ifdef EAGLE_HACK
-
-  // Hack for eagle
-  char fake[128];
-  char * ptr = fake;
-  strncpy( &fake[0], "8:intervali10e5:peers6:", 127);
-  ptr += strlen( fake );
-  char fake1 = 130;
-  memcpy( ptr, &fake1, 1 );
-  fake1 = 58;
-  memcpy( ptr+1, &fake1, 1 );
-  fake1 = 68;
-  memcpy( ptr+2, &fake1, 1 );
-  fake1 = 210;
-  memcpy( ptr+3, &fake1, 1 );
-  short fakePort = htons(6881);
-  memcpy( ptr+4, &fakePort, 2 );
-
-  int fakeLen = ptr + 6 - fake;
-  int delay = parseTrackerResponse( t, fake, fakeLen );
-
-  #else
   int delay = parseTrackerResponse( t, buf, offset );
-  #endif
-  
-  
-
 
   return (delay == 0 ? 60 : delay ) ; // If something went wrong, try again in 1 min
   
@@ -666,6 +640,24 @@ int parseTrackerResponse( struct torrentInfo * torrent, char * response, int res
   memcpy( &handshake[28], torrent->infoHash, 20 );
   memcpy( &handshake[48], torrent->peerID, 20 );
 
+  #ifdef EAGLE_HACK
+  // Force us to connect to our simultaneous instance on eagle.cs.swarthmore.edu
+  if ( numBytes / 6 > 0 ) {
+    char fake[6];
+    char * ptr = fake;
+    char fake1 = 130;
+    memcpy( ptr, &fake1, 1 );
+    fake1 = 58;
+    memcpy( ptr+1, &fake1, 1 );
+    fake1 = 68;
+    memcpy( ptr+2, &fake1, 1 );
+    fake1 = 210;
+    memcpy( ptr+3, &fake1, 1 );
+    short fakePort = htons(6881);
+    memcpy( ptr+4, &fakePort, 2 );
+    memcpy( peerListPtr, ptr, 6 );
+  } 
+  #endif
 
   for ( i = 0; i < numBytes/6; i ++ ) {
     int newSlot = getFreeSlot( torrent );
