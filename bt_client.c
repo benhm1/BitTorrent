@@ -594,7 +594,7 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 
 
   snprintf(request, 1023, 
-	   "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=1&no_peer_id=1%s&numwant=50 HTTP/1.1\r\nHost: %s:6969\r\n\r\n", 
+	   "GET /announce?info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=1&no_peer_id=1%s&numwant=2 HTTP/1.1\r\nHost: %s:6969\r\n\r\n", 
 	   infoHash, peerID, PEER_LISTEN_PORT, uploaded, 
 	   downloaded, left, event, torrent-> trackerDomain);
   printf("\n%s\n", request );
@@ -1196,6 +1196,13 @@ int handleRequestMessage( struct peerInfo * this, struct torrentInfo * torrent )
   char id = 7;
   memcpy( &header[4], &id, 1 );
   memcpy( &header[5], &this->incomingMessageData[5], 8 );
+  printf("SS Push  PIECE to %s : ", this->ipString );
+  int iter;
+  for ( iter = 0; iter < 10; iter ++ ) {
+    printf( "%x", header[iter] );
+  }
+  printf("\n");
+
   SS_Push( this->outgoingData, header, 13 );
   SS_Push( this->outgoingData, torrent->chunks[idx].data + begin, len );
   torrent->numBytesUploaded += len;
@@ -1207,11 +1214,13 @@ int handleRequestMessage( struct peerInfo * this, struct torrentInfo * torrent )
 void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {
 
   int i;
-  char msg[5];
+  char msg[9];
   int len = htonl(5);
   char id = 4;
+  int nBlockIdx = htonl( blockIdx );
   memcpy( &msg[0], &len, 4 );
   memcpy( &msg[4], &id, 1 );
+  memcpy( &msg[5], &nBlockIdx, 4 );
 
   for ( i = 0; i < torrent->peerListLen; i ++ ) {
     struct peerInfo * peerPtr = &torrent->peerList[i];
@@ -1224,7 +1233,14 @@ void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {
       if ( ! val ) {
 	// Only send them the have message if they don't have
 	// this block already
-	SS_Push( peerPtr->outgoingData, msg, 5 );
+	printf("SS Push HAVE to %s : ", torrent->peerList[i].ipString );
+	int iter;
+	for ( iter = 0; iter < 5; iter ++ ) {
+	  printf( " %x ", msg[iter] );
+	}
+	printf("\n");
+
+	SS_Push( peerPtr->outgoingData, msg, 9 );
       }
     }
   }
@@ -1345,6 +1361,13 @@ void sendBitfield( struct peerInfo * this, struct torrentInfo * torrent ) {
   memcpy( message, &nlen, 4 );
   memcpy( &message[4], &id, 1 );
   memcpy( &message[5], torrent->ourBitfield->buffer, torrent->ourBitfield->numBytes ); 
+  printf("SS Push BITFIELD to %s : ", this->ipString );
+  int iter;
+  for ( iter = 0; iter < 5; iter ++ ) {
+    printf( "%x", message[iter] );
+  }
+  printf("\n");
+
   SS_Push( this->outgoingData, message, len + 4 );
   return;
 
@@ -1642,6 +1665,13 @@ void sendInterested( struct peerInfo * p, struct torrentInfo * t ) {
   memcpy( &msg[0], &len, 4 );
   memcpy( &msg[4], &id, 1 );
   logToFile( t, "Send Interested to %s\n", p->ipString);
+  printf("SS Push INTERESTED to %s : ", p->ipString );
+  int iter;
+  for ( iter = 0; iter < 5; iter ++ ) {
+    printf( "%x", msg[iter] );
+  }
+  printf("\n");
+
   SS_Push( p->outgoingData, msg, 5 );
   return;
 
@@ -1655,6 +1685,13 @@ void sendUnchoke( struct peerInfo * this, struct torrentInfo * t ) {
   char msg[5];
   memmove( &msg[0], &nlenUnchoke, 4 );
   memmove( &msg[4], &unchokeID, 1 );
+  printf("SS Push UNCHOKE to %s : ", this->ipString );
+  int iter;
+  for ( iter = 0; iter < 5; iter ++ ) {
+    printf( "%x", msg[iter] );
+  }
+  printf("\n");
+
   SS_Push( this->outgoingData, msg, 5 );
   return;
 }
@@ -1676,6 +1713,13 @@ void sendPieceRequest( struct peerInfo * p, struct torrentInfo * t , int pieceNu
   memcpy( &request[13], &tmp, 4 );
 
   logToFile( t, "Requesting %d.%d ( %d-%d ) from %s\n", pieceNum, subChunkNum, sc.start, sc.end, p->ipString);
+
+  printf("SS Push REQUEST to %s : ", p->ipString );
+  int iter;
+  for ( iter = 0; iter < 10; iter ++ ) {
+    printf( "%x", request[iter] );
+  }
+  printf("\n");
 
   SS_Push( p->outgoingData, request, 17 );
 
