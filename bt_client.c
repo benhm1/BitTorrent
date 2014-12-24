@@ -1189,6 +1189,14 @@ int handleRequestMessage( struct peerInfo * this, struct torrentInfo * torrent )
     return -1;
   }
 
+  char header[ 13 ];
+  int respLen = 9 + len;
+  int nrespLen = htonl( respLen );
+  memcpy( &header[0], &nrespLen, 4 );
+  char id = 7;
+  memcpy( &header[4], &id, 1 );
+  memcpy( &header[5], &this->incomingMessageData[5], 8 );
+  SS_Push( this->outgoingData, header, 13 );
   SS_Push( this->outgoingData, torrent->chunks[idx].data + begin, len );
   torrent->numBytesUploaded += len;
 
