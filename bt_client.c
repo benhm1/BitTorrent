@@ -986,11 +986,18 @@ void initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
 
 
 void destroyTorrentInfo( ) { 
-  
+ 
+
   struct torrentInfo * t = globalTorrentInfo;
+
+  logToFile( t,  "SIGINT Received - Shutting down ... \n");
+  printf("SIGINT Received - Shutting down ... \n");
 
   // Tell the tracker we're shutting down.
   doTrackerCommunication( t, TRACKER_STOPPED );
+
+  logToFile( t, "Notified tracker we're stopping\n");
+  printf("Notified tracker we're stopping\n");
 
   free( t->announceURL );
   free( t->trackerDomain );
@@ -1010,6 +1017,8 @@ void destroyTorrentInfo( ) {
     }
   }
 
+  printf("Freed data chunks and peer metadata structures\n");
+  logToFile( t, "Freed data chunks and peer metadata structures\n");
 
   free( t->chunks );
   free( t->name );
@@ -1017,9 +1026,13 @@ void destroyTorrentInfo( ) {
   free( t->infoHash );
   free( t->peerID );
   free( t->peerList );
-
   Bitfield_Destroy( t->ourBitfield );
+
   munmap( t->fileData, t->totalSize );
+
+  printf("Unmapped file.\nClosing logfile.\n");
+  logToFile( t, "Unmapped file.\n");
+  logToFile( t, "Closing logfile.\n");
 
   if ( t->logFile ) {
     fclose( t->logFile );
