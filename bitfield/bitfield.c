@@ -120,7 +120,7 @@ int Bitfield_Get( Bitfield * cur, int bitNum, int * val ) {
   }
 
   int byteNum = bitNum / 8;
-  *val = cur->buffer[ byteNum ] && (0x1 << (7-( bitNum % 8 )) );
+  *val = cur->buffer[ byteNum ] & (0x1 << (7-( bitNum % 8 )) );
   return 0 ;
 
 

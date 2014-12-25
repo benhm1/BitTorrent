@@ -61,18 +61,27 @@ int main() {
 
 
   printf("Testing Bitfield_Get, Bitfield_Set, and Bitfield_Clear\n");
-  bitfield = Bitfield_Init( 2048 );
+  int size = 2048;
+  bitfield = Bitfield_Init( size );
   srand(time(NULL));
   int r ;
   int val;
   for ( i = 0; i < 10000; i ++ ) {
 
-    r = rand() % 2048;
+    r = rand() % size;
     assert( !Bitfield_Get( bitfield, r, &val ) );
     assert( ! val );
     assert( !Bitfield_Set( bitfield, r ) );
-    assert( !Bitfield_Get( bitfield, r, &val ) );
-    assert(  val );
+
+    for ( j = 0; j < size; j ++ ) {
+      assert( !Bitfield_Get( bitfield, j, &val ) );
+      if ( j == r ) {
+	assert(  val );
+      }
+      else {
+	assert( !val );
+      }
+    }
     assert( !Bitfield_Clear( bitfield, r ) );
     assert( !Bitfield_Get( bitfield, r, &val ) );
     assert( ! val );

@@ -29,7 +29,8 @@
 
 
 #include "StringStream/StringStream.h"
-#include "bitfield.h"
+#include "bitfield/bitfield.h"
+#include "timer/timer.h"
 
 #define EAGLE_HACK 1
 
@@ -68,6 +69,7 @@ struct argsInfo {
 
 #define BT_PEER 1
 #define BT_SEED 2
+#define BT_UNKNOWN 3
 
 #define TRACKER_STARTED 1
 #define TRACKER_STOPPED 2
@@ -136,6 +138,7 @@ struct torrentInfo {
  
   int numPeers;
   int numSeeds;
+  int numUnknown;
 
   long long numBytesDownloaded;
   long long numBytesUploaded  ;
@@ -482,6 +485,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
   // Initialize number of peers and seeds
   toRet->numPeers = 0;
   toRet->numSeeds = 0;
+  toRet->numUnknown = 0;
 
   // Initialize upload / download stats
   toRet->numBytesUploaded = 0;
@@ -599,7 +603,7 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 	   "compact=1&"
 	   "no_peer_id=1"
 	   "%s&"          // Event string, if present
-	   "numwant=50 "
+	   "numwant=3 "
 	   "HTTP/1.1\r\nHost: %s:6969\r\n\r\n", 
 	   infoHash, peerID, PEER_LISTEN_PORT, uploaded, 
 	   downloaded, left, event, torrent-> trackerDomain);
@@ -745,12 +749,14 @@ void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) {
     torrent->numPeers -= 1;
   }
   else if ( peer->type == BT_SEED ) {
-    logToFile( torrent, "STATUS Destroying peer: %s:%d\n", 
-	       peer->ipString, peer->portNum);
     torrent->numSeeds -= 1;
   }
-  else { }
-
+  else { 
+    torrent->numUnknown -= 1;
+  }
+  logToFile( torrent, "STATUS Destroying connection: %s:%d\n", 
+	     peer->ipString, peer->portNum);
+    
   close( peer->socket );
   Bitfield_Destroy( peer->haveBlocks );
   free( peer->incomingMessageData );
@@ -813,8 +819,8 @@ void peerConnectedToUs( struct torrentInfo * torrent, int listenFD ) {
 	    "STATUS Accepted Connection from %s:%u\n", 
 	    this->ipString, (unsigned int)this->portNum );
 
-  torrent->numPeers += 1;
-  this->type = BT_PEER;
+  torrent->numUnknown += 1;
+  this->type = BT_UNKNOWN;
 
   return ;
 
@@ -943,9 +949,9 @@ int connectToPeer( struct peerInfo * this,
 	     this->ipString, this->portNum );
 
   this->status = BT_AWAIT_RESPONSE_HANDSHAKE;
-  this->type = BT_SEED;
+  this->type = BT_UNKNOWN;
 
-  torrent->numSeeds += 1;
+  torrent->numUnknown += 1;
 
   return 0;
 
@@ -1139,7 +1145,42 @@ int handleHaveMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
   blockNum = ntohl( blockNum );
   logToFile(torrent, "MESSAGE HAVE %u FROM %s:%d \n", 
 	    blockNum, this->ipString, this->portNum );
-  return Bitfield_Set( this->haveBlocks, blockNum );
+  int ret = Bitfield_Set( this->haveBlocks, blockNum );
+
+  // If they are now finished, we should classify them as a seeder
+  if ( Bitfield_AllSet( this->haveBlocks) ) {
+    if ( this->type == BT_UNKNOWN ) {
+      torrent->numUnknown --;
+      torrent->numSeeds ++;
+      this->type = BT_SEED;
+    }
+    if ( this->type == BT_PEER ) {
+      torrent->numPeers --;
+      torrent->numSeeds ++;
+      this->type = BT_SEED;
+    }
+  }
+  else {
+    int i, val;
+    logToFile( torrent, "Begin listing chunks for peer %s\n", this->ipString );
+    for ( i = 0; i < torrent->numChunks; i ++ ) {
+      if ( (! Bitfield_Get( this->haveBlocks, i, &val )) && val ) {
+	logToFile( torrent, "Peer %s has chunk %d - have message.\n",
+		   this->ipString, i );
+      }
+    }
+    logToFile( torrent, "Done listing chunks for peer %s\n", this->ipString);
+
+    if ( this->type == BT_UNKNOWN ) {
+      this->type = BT_PEER;
+      torrent->numPeers ++ ;
+      torrent->numUnknown --;
+    }
+  }
+
+
+
+  return ret;
 }
 
 int handleBitfieldMessage( struct peerInfo * this, 
@@ -1150,9 +1191,43 @@ int handleBitfieldMessage( struct peerInfo * this,
   int len;
   memcpy( &len, &this->incomingMessageData[0], 4 );
   len = ntohl( len );
-  return Bitfield_FromExisting( this->haveBlocks, 
-				&this->incomingMessageData[5],
-				len - 1 ); // Don't count message type byte
+
+  int ret = Bitfield_FromExisting( this->haveBlocks, 
+				   &this->incomingMessageData[5],
+				   len - 1 ); // Don't count message type byte
+
+ // If they are now finished, we should classify them as a seeder
+  if ( Bitfield_AllSet( this->haveBlocks) ) {
+    if ( this->type == BT_UNKNOWN ) {
+      torrent->numUnknown --;
+      torrent->numSeeds ++;
+      this->type = BT_SEED;
+    }
+    if ( this->type == BT_PEER ) {
+      torrent->numPeers --;
+      torrent->numSeeds ++;
+      this->type = BT_SEED;
+    }
+  }
+  else {
+    int i, val;
+    logToFile( torrent, "Begin listing chunks for peer %s\n", this->ipString );
+    for ( i = 0; i < torrent->numChunks; i ++ ) {
+      if ( (! Bitfield_Get( this->haveBlocks, i, &val )) && val ) {
+	logToFile( torrent, "Peer %s has chunk %d - bitfield message.\n",
+		   this->ipString, i );
+      }
+    }
+    logToFile( torrent, "Done listing chunks for peer %s\n", this->ipString);
+    if ( this->type == BT_UNKNOWN ) {
+      this->type = BT_PEER;
+      torrent->numPeers ++ ;
+      torrent->numUnknown --;
+    }
+  }
+  
+
+  return ret;
 
 }
 
@@ -1177,17 +1252,17 @@ int handleRequestMessage( struct peerInfo * this,
 
   if ( ! torrent->chunks[idx].have ) {
     logToFile( torrent, 
-	       "WARNING Received request for chunk %d, which I don't have.\n", 
-	       idx );
+	       "WARNING Request ffrom %s:%d for chunk %d, which I don't have.\n", 
+	       this->ipString, this->portNum, idx );
     return -1;
   }
 
   // Check that the chunk is as large as the request says
   if ( begin + len > torrent->chunks[idx].size ) {
     logToFile(torrent, 
-	      "WARNING Received request for chunk %d.%d-%d,"
-	      "which is out of bounds.\n",
-	      idx, begin, begin + len );
+	      "WARNING Request from %s:%d for chunk %d.%d-%d,"
+	      "is out of bounds.\n",
+	      this->ipString, this->portNum, idx, begin, begin + len );
     return -1;
   }
 
@@ -1230,6 +1305,8 @@ void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {
       if ( ! val ) {
 	// Only send them the have message if they don't have
 	// this block already
+	logToFile( torrent, "SEND HAVE %d TO %s:%d\n",
+		   blockIdx, peerPtr->ipString, peerPtr->portNum);
 	SS_Push( peerPtr->outgoingData, msg, 9 );
       }
     }
@@ -1502,6 +1579,9 @@ void handleFullMessage( struct peerInfo * this,
     };
 
     if ( error ) {
+      logToFile( torrent, "Destroying %s:%d - error processing %d\n",
+		 this->ipString, this->portNum, 
+		 this->incomingMessageData[4] );
       destroyPeer( this, torrent );
     }
     else {
@@ -1695,7 +1775,8 @@ void generateMessages( struct torrentInfo * t ) {
     
       if ( ! t->chunks[j].have ) {
 	struct peerInfo* peerPtr = &(t->peerList[i]);
-	if ( ! Bitfield_Get( peerPtr->haveBlocks, j, &val ) && val ) {
+	if ( (! Bitfield_Get( peerPtr->haveBlocks, j, &val )) && val ) {
+	  logToFile( t, "Peer %s has block %d\n", peerPtr->ipString, j );
 	  // Our peer has this chunk, and we want it.
 	  t->peerList[i].am_interested = 1;
 	  
@@ -1931,12 +2012,13 @@ void printStatus( struct torrentInfo * t ) {
   }
   printf("\n\n");
 
-  printf("Number of Peers: %d\n", t->numPeers);
-  printf("Number of Seeds: %d\n", t->numSeeds);
-  printf("Download Amount: %.1f kB\n", 1.0*t->numBytesDownloaded / 1000 );
-  printf("  Upload Amount: %.1f kB\n", 1.0*t->numBytesUploaded / 1000 );
+  printf("  Number of Peers: %d\n", t->numPeers);
+  printf("  Number of Seeds: %d\n", t->numSeeds);
+  printf("Number of Unknown: %d\n", t->numUnknown);
+  printf("  Download Amount: %.1f kB\n", 1.0*t->numBytesDownloaded / 1000 );
+  printf("    Upload Amount: %.1f kB\n", 1.0*t->numBytesUploaded / 1000 );
   printf("\n===================================\n");
-  logToFile( t, "STATUS UPDATE  Downloaded:%.1f, Uploaded %.1f",
+  logToFile( t, "STATUS UPDATE  Downloaded:%.1f, Uploaded %.1f\n",
 	     1.0*t->numBytesDownloaded/1000, 
 	     1.0*t->numBytesUploaded/1000 );
 	     
