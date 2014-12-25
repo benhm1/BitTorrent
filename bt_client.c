@@ -37,8 +37,6 @@
 /*
   Todos - 
 
-  Handle keepalive messages and timeout messages.
-
   Allow for restarts
 
   More intelligent selection of pieces - rarest first?
@@ -78,7 +76,7 @@ struct argsInfo {
 #define BACKLOG 20
 
 #define MAX_PENDING_SUBCHUNKS 10
-
+#define MAX_TIMEOUT_WAIT 20
 typedef void handler_t(int);
 
 struct subChunk {
@@ -184,6 +182,8 @@ struct peerInfo {
 
   int lastInterestedRequest;
   int lastWrite;
+  int lastMessage;
+
 
   int numPendingSubchunks;
 
@@ -213,8 +213,6 @@ void usage(FILE * file);
 
 
 
-
-
 int min( int a, int b ) { return a > b ? b : a; }
 
 void * Malloc( size_t size ) {
@@ -238,6 +236,39 @@ handler_t * setupSignals(int signum, handler_t * handler) {
   }
   return (old_action.sa_handler);     
 }  
+
+
+void timeoutDetection( int sig, siginfo_t * si, void * uc ) {
+  int i;
+
+  struct torrentInfo* t = (struct torrentInfo *) si->si_value.sival_ptr ;
+
+  struct timeval tv;
+  if ( gettimeofday( &tv, NULL ) ) {
+    perror("gettimeofday");
+    exit(1);
+  }
+
+  for ( i = 0; i < t->peerListLen; i ++ ) {
+    if ( t->peerList[i].defined &&
+	 tv.tv_sec - t->peerList[i].lastWrite > 3 &&
+	 tv.tv_sec - t->peerList[i].lastMessage > MAX_TIMEOUT_WAIT ) {
+      /*
+	Stop talking to people who we've sent stuff to a while ago and
+	they haven't responded to us in a reasonable amount of time.
+       */
+      logToFile( t, "STATUS TIMEOUT %s:%d\n", 
+		 t->peerList[i].ipString, t->peerList[i].portNum );
+      destroyPeer( &t->peerList[i], t );
+    }
+  }
+
+  return;
+
+}
+
+
+
 
 // Given a hostname, returns its IP address or exits if DNS lookup fails
 void lookupIP( char * hostname, char * IP ) {
@@ -688,9 +719,9 @@ int parseTrackerResponse( struct torrentInfo * torrent,
     memcpy( ptr+1, &fake1, 1 );
     fake1 = 68;
     memcpy( ptr+2, &fake1, 1 );
-    fake1 = 210;
+    fake1 = 165; // FIXME TODO
     memcpy( ptr+3, &fake1, 1 );
-    short fakePort = htons(6881);
+    short fakePort = htons(8000); //6881);
     memcpy( ptr+4, &fakePort, 2 );
     memcpy( peerListPtr, ptr, 6 );
   } 
@@ -980,6 +1011,8 @@ void initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   this->lastInterestedRequest = 0;
   this->lastWrite = 0;
+  this->lastMessage = 0;
+
   this->numPendingSubchunks = 0;
 
   // Slot is taken
@@ -1290,7 +1323,10 @@ void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {
 
   for ( i = 0; i < torrent->peerListLen; i ++ ) {
     struct peerInfo * peerPtr = &torrent->peerList[i];
-    if ( peerPtr->defined ) {
+    if ( peerPtr->defined && 
+	 peerPtr->status != BT_AWAIT_INITIAL_HANDSHAKE &&
+	 peerPtr->status != BT_AWAIT_RESPONSE_HANDSHAKE ) 
+      {
       int val;
       if ( Bitfield_Get( peerPtr->haveBlocks, blockIdx, &val ) ) {
 	perror("bitfield_get");
@@ -1442,6 +1478,15 @@ void sendBitfield( struct peerInfo * this, struct torrentInfo * torrent ) {
 void handleFullMessage( struct peerInfo * this, 
 			struct torrentInfo * torrent ) {
   
+  // Log that we heard something from this connection,
+  // so that our timeout signal handler doesn't kill it
+  struct timeval tv;
+  if ( gettimeofday( &tv, NULL ) ){
+    perror("gettimeofday");
+    exit(1);
+  }
+  this->lastMessage = tv.tv_sec;
+
   // If we were expecting a handshake, see if we got it
   if ( this->status == BT_AWAIT_INITIAL_HANDSHAKE ||
        this->status == BT_AWAIT_RESPONSE_HANDSHAKE ) {
@@ -2039,12 +2084,20 @@ int main(int argc, char ** argv) {
 
   doTrackerCommunication( t, TRACKER_STARTED );
 
+  // Check in with the tracker server in 30 seconds,
+  // and then parse the tracker response for subsequent
+  // checkin delays
   setupSignals( SIGALRM, trackerCheckin );
-  setupSignals( SIGINT, destroyTorrentInfo );
+  alarm( 30 );  
 
-  alarm( 30 );
+  // When the user hits Ctrl^C, exit
+  setupSignal( SIGINT, destroyTorrentInfo, 0, t );
 
-  // trackerAnnounce( t ) ;
+  // Every 30 seconds, check for idle connections
+  setupSignal( SIGUSR1, timeoutDetection, 30, t );
+
+  
+
 
   // By this point, we have a list of peers we are connected to.
   // We can now start our select loop
