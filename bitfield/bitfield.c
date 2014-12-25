@@ -1,10 +1,71 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "bitfield.h"
 
-extern void* Malloc( size_t );
+static void* Malloc( size_t size ) {
+
+  void * toRet = malloc( size );
+  if ( ! toRet ) {
+    perror("malloc");
+    exit(1);
+  }
+  return toRet;
+
+}
+
+
+int Bitfield_AllSet( Bitfield * cur ) {
+
+  int i;
+  char mask[ cur->numBytes ];
+  memset( mask, 0xff, cur->numBytes );
+
+  int numExtra = (cur->numBits % 8 == 0 ? 0 : 
+		  8 - cur->numBits % 8 ) ;
+  
+  for ( i = 0; i < numExtra; i ++ ) {
+    mask[cur->numBytes-1] &= ~( 1 << i ) ;
+  }
+
+
+  for ( i = 0; i < cur->numBytes; i ++ ) {
+    if ( (cur->buffer[i] & mask[i]) != mask[i] ) {
+      // There is some difference 
+      return 0;
+    }
+  }
+  return 1;
+    
+}
+
+
+int Bitfield_NoneSet( Bitfield * cur ) {
+  int i;
+  char mask[ cur->numBytes ];
+  memset( mask, 0xff, cur->numBytes );
+
+  int numExtra = (cur->numBits % 8 == 0 ? 0 : 
+		  8 - cur->numBits % 8 ) ;
+  
+  for ( i = 0; i < numExtra; i ++ ) {
+    mask[cur->numBytes-1] &= ~( 1 << i ) ;
+  }
+
+  char zeroMask[ cur->numBytes ];
+  memset( zeroMask, 0x0, cur->numBytes );
+
+  for ( i = 0; i < cur->numBytes; i ++ ) {
+    if ( (cur->buffer[i] & mask[i]) != 0 ) {
+      // There is some difference 
+      return 0;
+    }
+  }
+  return 1;
+}
+
 
 Bitfield * Bitfield_Init( int numBits ) {
 
@@ -13,10 +74,7 @@ Bitfield * Bitfield_Init( int numBits ) {
   int numBytes = (numBits + 7) / 8;
   char * buf = Malloc( numBytes );
 
-  int i;
-  for ( i = 0; i < numBytes; i ++ ) {
-    buf[i] = '\0';
-  }
+  memset( buf, 0x0, numBytes );
 
   toRet-> buffer = buf;
   toRet-> numBytes = numBytes;
@@ -44,7 +102,7 @@ int Bitfield_FromExisting( Bitfield * cur, char * other, int numBytes ) {
 
   // Check that all of the bits that should be empty are empty
   for ( i = cur->numBits; i < cur->numBytes * 8; i ++ ) {
-    if ( cur->buffer[ cur->numBytes - 1 ] && (0x1 << (7-( i % 8 )) ) ) {
+    if ( other[ cur->numBytes - 1 ] & (0x1 << (7-( i % 8 )) ) ) {
       return -1;
     }
   }

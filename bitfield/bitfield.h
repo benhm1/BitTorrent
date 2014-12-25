@@ -1,6 +1,10 @@
 #ifndef BITFIELD_BM_H
 #define BITFIELD_BM_H
 
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
 typedef struct {
 
   char * buffer;
@@ -21,5 +25,10 @@ int Bitfield_Get( Bitfield * cur, int bitNum, int * val ) ;
 int Bitfield_Set( Bitfield * cur, int bitNum ) ;
 
 int Bitfield_Clear( Bitfield * cur, int bitNum ) ;
+
+int Bitfield_AllSet( Bitfield * cur );
+
+int Bitfield_NoneSet( Bitfield * cur );
+
 
 #endif

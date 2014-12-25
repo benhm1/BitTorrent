@@ -1,9 +1,9 @@
 CC=gcc
 CPFLAGS=-g -Wall
-LDFLAGS= -lcrypto -lcrypt
+LDFLAGS= -lcrypto -lcrypt -lrt
 
 
-SRC= bencode.c percentEncode.c bt_client.c  bitfield.c StringStream/StringStream.c
+SRC= bencode.c percentEncode.c bt_client.c StringStream/StringStream.c bitfield/bitfield.c timer/timer.c
 OBJ=$(SRC:.c=.o)
 BIN=bt_client
 
