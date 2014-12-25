@@ -43,8 +43,6 @@
 
   More intelligent selection of pieces - rarest first?
 
-  Better distinction of peers vs seeds?
-
 */
 
 
@@ -139,6 +137,8 @@ struct torrentInfo {
   int numPeers;
   int numSeeds;
   int numUnknown;
+  int maxPeers;
+  
 
   long long numBytesDownloaded;
   long long numBytesUploaded  ;
@@ -486,6 +486,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
   toRet->numPeers = 0;
   toRet->numSeeds = 0;
   toRet->numUnknown = 0;
+  toRet->maxPeers = args->maxPeers;
 
   // Initialize upload / download stats
   toRet->numBytesUploaded = 0;
@@ -603,7 +604,7 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 	   "compact=1&"
 	   "no_peer_id=1"
 	   "%s&"          // Event string, if present
-	   "numwant=3 "
+	   "numwant=50 "
 	   "HTTP/1.1\r\nHost: %s:6969\r\n\r\n", 
 	   infoHash, peerID, PEER_LISTEN_PORT, uploaded, 
 	   downloaded, left, event, torrent-> trackerDomain);
@@ -1161,20 +1162,16 @@ int handleHaveMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
     }
   }
   else {
-    int i, val;
-    logToFile( torrent, "Begin listing chunks for peer %s\n", this->ipString );
-    for ( i = 0; i < torrent->numChunks; i ++ ) {
-      if ( (! Bitfield_Get( this->haveBlocks, i, &val )) && val ) {
-	logToFile( torrent, "Peer %s has chunk %d - have message.\n",
-		   this->ipString, i );
-      }
-    }
-    logToFile( torrent, "Done listing chunks for peer %s\n", this->ipString);
-
     if ( this->type == BT_UNKNOWN ) {
       this->type = BT_PEER;
       torrent->numPeers ++ ;
       torrent->numUnknown --;
+
+      if ( torrent->numPeers > torrent->maxPeers ) {
+	ret = -1; // This will lead to destruction of the peer
+      }
+
+
     }
   }
 
@@ -1210,19 +1207,16 @@ int handleBitfieldMessage( struct peerInfo * this,
     }
   }
   else {
-    int i, val;
-    logToFile( torrent, "Begin listing chunks for peer %s\n", this->ipString );
-    for ( i = 0; i < torrent->numChunks; i ++ ) {
-      if ( (! Bitfield_Get( this->haveBlocks, i, &val )) && val ) {
-	logToFile( torrent, "Peer %s has chunk %d - bitfield message.\n",
-		   this->ipString, i );
-      }
-    }
-    logToFile( torrent, "Done listing chunks for peer %s\n", this->ipString);
     if ( this->type == BT_UNKNOWN ) {
       this->type = BT_PEER;
       torrent->numPeers ++ ;
       torrent->numUnknown --;
+
+      if ( torrent->numPeers > torrent->maxPeers ) {
+	ret = -1; // This will lead to destruction of the peer
+      }
+
+
     }
   }
   
