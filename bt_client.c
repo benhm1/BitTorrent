@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
+#include <ifaddrs.h>
 
 #include <fcntl.h>
 
@@ -37,16 +38,6 @@
 
   Handle keepalive messages and timeout messages.
 
-  Parse command line arguments
-  => Save file
-  => Log file
-  => Bind address
-  => Bind port
-  => Node ID
-  => Verbose
-  => Max connections
-
-
   Allow for restarts
 
   More intelligent selection of pieces - rarest first?
@@ -54,6 +45,20 @@
   Better distinction of peers vs seeds?
 
 */
+
+
+struct argsInfo {
+
+  char * saveFile;
+  char * logFile ;
+  char * nodeID;
+  char * fileName;
+  int maxPeers;
+  int bindAddress ;
+  unsigned short bindPort;
+
+};
+
 
 #define BT_CONNECTED 1
 #define BT_AWAIT_INITIAL_HANDSHAKE 2  
@@ -199,6 +204,9 @@ int nonBlockingConnect( char * ip, unsigned short port, int sock ) ;
 int parseTrackerResponse( struct torrentInfo * torrent, 
 			  char * response, int responseLen );
 void sendUnchoke( struct peerInfo * this, struct torrentInfo * t );
+char * generateID();
+unsigned char * computeSHA1( char * data, int size ) ;
+void usage(FILE * file);
 
 
 
@@ -323,7 +331,8 @@ unsigned char * computeSHA1( char * data, int size ) {
 }
 
 
-struct torrentInfo* processBencodedTorrent( be_node * data ) {
+struct torrentInfo* processBencodedTorrent( be_node * data, 
+					    struct argsInfo * args ) {
 
   int i, j;
   int chunkHashesLen;
@@ -376,7 +385,11 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
 	  printf("Chunk Size: %d\n", toRet->chunkSize );
 	}
 	else if ( 0 == strcmp( key, "name" ) ) {
-	  toRet->name = strdup( infoIter->val.d[j].val->val.s );
+	  int nameLen = strlen(infoIter->val.d[j].val->val.s ) + 
+	    strlen( args->saveFile ) + 3;
+	  toRet->name = Malloc( nameLen * sizeof(char) );
+	  snprintf( toRet->name, nameLen - 1, "%s/%s", 
+		    args->saveFile, infoIter->val.d[j].val->val.s );
 	  printf("Torrent Name: %s\n", toRet->name );
 	}
 	else if ( 0 == strcmp( key, "pieces" ) ) {
@@ -463,7 +476,8 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
   free( string );
 
   // Initialize the peer ID;
-  toRet->peerID = strdup( "BMaPeerID12345123456" );
+  toRet->peerID = Malloc( 20 );
+  memcpy( toRet->peerID, args->nodeID, 20 );
   
   // Initialize number of peers and seeds
   toRet->numPeers = 0;
@@ -477,7 +491,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
 
   // Initialize the memory mapped file where we will store results
   mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-  int saveFile = open("/local/bmarks1/torrent.download", 
+  int saveFile = open(toRet->name,
 		      O_RDWR | O_CREAT | O_TRUNC, mode);
   if ( saveFile < 0 ) {
     perror("open");
@@ -497,7 +511,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data ) {
 
   // Initialize our log file
   FILE * logFile = 
-    fopen("/local/bmarks1/torrent.log", "w+" ) ;
+    fopen( args->logFile, "w+" ) ;
   if ( logFile < 0 ) {
     perror("open");
     exit(1);
@@ -1020,7 +1034,7 @@ void destroyTorrentInfo( ) {
 
 }
 
-int setupListeningSocket() {
+int setupListeningSocket( struct argsInfo * args ) {
 
   // Initialize the socket that our peers will connect to
   /* Create the socket that we'll listen on. */
@@ -1037,8 +1051,8 @@ int setupListeningSocket() {
 
   struct sockaddr_in addr;
   addr.sin_family = AF_INET;
-  addr.sin_port = htons( PEER_LISTEN_PORT );
-  addr.sin_addr.s_addr = INADDR_ANY;
+  addr.sin_port = htons( args->bindPort );
+  addr.sin_addr.s_addr = args->bindAddress ;
   
   /* Bind our socket and start listening for connections. */
   val = bind(serv_sock, (struct sockaddr*)&addr, sizeof(addr));
@@ -1714,6 +1728,162 @@ void generateMessages( struct torrentInfo * t ) {
 
 }
 
+void freeArgs( struct argsInfo * args ) {
+
+  free( args->fileName );
+  free( args->saveFile );
+  free( args->logFile );
+  free( args->nodeID );
+  free( args );
+  return;
+}
+
+struct argsInfo * parseArgs( int argc, char ** argv ) {
+
+  int ch;
+  struct in_addr in;
+  struct argsInfo * toRet = Malloc( sizeof( struct argsInfo ) );
+  // Set default values
+  toRet->saveFile = strdup("./");
+  toRet->logFile = strdup("./bt-client.log");
+  toRet->nodeID = generateID();
+
+  toRet->fileName = NULL;
+
+  toRet->maxPeers = 30;
+  toRet->bindAddress = INADDR_ANY;
+  toRet->bindPort = 6881;
+
+  while ((ch = getopt(argc, argv, "ht:p:s:l:I:m:b:")) != -1) {
+    switch (ch) {
+    case 'h': //help                                                                     
+      usage(stdout);
+      exit(0);
+      break;
+    case 't' : // torrent file name
+      toRet->fileName = strdup( optarg );
+      break;
+    case 's': //save file
+      free( toRet->saveFile );
+      toRet->saveFile = strdup( optarg );
+      break;
+    case 'l': //log file
+      free( toRet->logFile );
+      toRet->logFile = strdup( optarg );
+      break;
+    case 'I': 
+      free( toRet->nodeID );
+      toRet->nodeID = Malloc( 20 );
+      strncpy( toRet->nodeID, optarg, 20 );
+      break;
+    case 'm' : // Max peers
+      toRet->maxPeers = atoi(optarg);
+      break;
+    case 'b' :
+      if ( inet_aton( optarg, &in ) == 0 ) {
+	toRet->bindAddress = in.s_addr;
+      }
+    case 'p' :
+      toRet->bindPort = atoi( optarg );
+    default:
+      fprintf(stderr,"ERROR: Unknown option '-%c'\n",ch);
+      usage(stdout);
+      exit(1);
+    }                                                            
+  }
+
+  if ( toRet->fileName == NULL ) {
+    usage(stdout);
+    exit(1);
+   
+  }
+
+
+  return toRet;
+
+}
+
+void usage(FILE * file){
+  if(file == NULL){
+    file = stdout;
+  }
+
+  fprintf(file,
+          "bt-client [OPTIONS] file.torrent\n"
+          "  -h          \t Print this help screen\n"
+          "  -t torrent  \t Torrent file name (required)\n"
+	  "  -b ip       \t Bind to this ip for incoming connections (dflt=INADDR_ANY)\n"
+	  "  -p port     \t Bind to this port for incoming connections (dflt=6881)\n"
+          "  -s save_file\t Save the torrent in directory save_dir (dflt: .)\n"
+          "  -l log_file \t Save logs to log_file (dflt: bt-client.log)\n"
+          "  -I id       \t Set the node identifier to id (dflt: random)\n"
+          "  -m max_num  \t Max number of peers to connect to at once (dflt:25)\n"
+	  );
+}
+
+
+char * generateID() {
+
+  // Return a SHA1 hash of the concatenation of 
+  // our IP address, startup time, and random
+  char starter[128];
+  memset( starter, 0, 128 );
+  starter[127] = '\0';
+
+
+  /* Get our startup time */
+  struct timeval tv;
+  if ( gettimeofday( &tv, NULL ) ) {
+    perror("gettimeofday");
+    exit(1);
+  }
+  snprintf( starter, 127, "%ld%lu", tv.tv_sec, tv.tv_usec );
+  
+  /* 
+     Get our IP address
+
+     Adapted from 
+     http://man7.org/linux/man-pages/man3/getifaddrs.3.html 
+  */
+  struct ifaddrs *ifaddr, *ifa;
+  int family, s, n;
+  char host[NI_MAXHOST];
+
+  if (getifaddrs(&ifaddr) == -1) {
+    perror("getifaddrs");
+    exit(1);
+  }
+
+  for (ifa = ifaddr, n = 0; ifa != NULL; ifa = ifa->ifa_next, n++) {
+    if (ifa->ifa_addr == NULL) {
+      continue;
+    }
+
+    family = ifa->ifa_addr->sa_family;
+    /* For an AF_INET* interface address, display the address */
+    if (family == AF_INET || family == AF_INET6) {
+      s = getnameinfo(ifa->ifa_addr,
+		      (family == AF_INET) ? sizeof(struct sockaddr_in) :
+		      sizeof(struct sockaddr_in6),
+		      host, NI_MAXHOST,
+		      NULL, 0, NI_NUMERICHOST);
+      if (s != 0) {
+	printf("getnameinfo() failed: %s\n", gai_strerror(s));
+	exit(1);
+      }
+      strncat( starter, host, 127 - strlen(host) );
+    }
+  }
+  freeifaddrs(ifaddr);
+
+  return (char*)computeSHA1( starter, 128 );
+  
+
+
+
+}
+
+
 void printStatus( struct torrentInfo * t ) {
 
   int i;
@@ -1766,13 +1936,15 @@ int main(int argc, char ** argv) {
 
   int ret;
 
-  be_node* data = load_be_node( argv[1] );
+  struct argsInfo * args = parseArgs( argc, argv );
+
+  be_node* data = load_be_node( args->fileName );
   
+  int listeningSocket = setupListeningSocket( args );
 
-  int listeningSocket = setupListeningSocket();
-
-  struct torrentInfo * t = processBencodedTorrent( data );
+  struct torrentInfo * t = processBencodedTorrent( data, args );
   be_free( data );
+  freeArgs( args );
 
   globalTorrentInfo = t;
 
