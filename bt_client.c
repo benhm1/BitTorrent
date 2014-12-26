@@ -156,6 +156,9 @@ struct torrentInfo {
 
   Bitfield * ourBitfield;
 
+  int bindAddress;
+  unsigned short bindPort;
+
 };
 
 
@@ -537,6 +540,9 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
   toRet->numBytesUploaded = 0;
   toRet->numBytesDownloaded = 0;
 
+  toRet->bindAddress = args->bindAddress;
+  toRet->bindPort    = args->bindPort;
+
   toRet->lastPrint = 0;
 
   // Initialize the memory mapped file where we will store results
@@ -626,18 +632,25 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
   
   char event[32];
   if ( msgType == TRACKER_STARTED ) {
-    strncpy( event, "&event=started", 31 );
+    strncpy( event, "event=started&", 31 );
   }
   else if ( msgType == TRACKER_STOPPED ) {
-    strncpy( event, "&event=stopped", 31 );
+    strncpy( event, "event=stopped&", 31 );
   }
   else if ( msgType == TRACKER_COMPLETED ) {
-    strncpy( event, "&event=completed", 31 );
+    strncpy( event, "event=completed&", 31 );
   }
   else {
     event[0] = '\0';
   }
 
+  char ip[25];
+  ip[0] = '\0';
+  if ( torrent->bindAddress != INADDR_ANY ) {
+    struct in_addr in;
+    in.s_addr = torrent->bindAddress;
+    snprintf( ip, 24, "ip=%s&", inet_ntoa( in ) );
+  }
 
   snprintf(request, 1023, 
 	   "GET /announce?"
@@ -648,12 +661,13 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 	   "downloaded=%d&"
 	   "left=%d&"
 	   "compact=1&"
-	   "no_peer_id=1"
-	   "%s&"          // Event string, if present
+	   "no_peer_id=1&"
+	   "%s"          // Event string, if present
+	   "%s"          // IP string, if present
 	   "numwant=50 "
 	   "HTTP/1.1\r\nHost: %s:6969\r\n\r\n", 
-	   infoHash, peerID, PEER_LISTEN_PORT, uploaded, 
-	   downloaded, left, event, torrent-> trackerDomain);
+	   infoHash, peerID, torrent->bindPort, uploaded, 
+	   downloaded, left, event, ip, torrent-> trackerDomain);
   free( infoHash );
   free( peerID );
 
