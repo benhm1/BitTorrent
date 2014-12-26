@@ -40,9 +40,6 @@
 
   More intelligent selection of pieces - rarest first?
 
-  Block signals when manipulating key data structures to avoid
-  race conditions.
-
 */
 
 
