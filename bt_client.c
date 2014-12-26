@@ -133,6 +133,9 @@ struct torrentInfo {
 
   struct peerInfo * peerList;
   int peerListLen;
+
+  struct peerInfo * optimisticUnchoke;
+  int chokingIter;
  
   int numPeers;
   int numSeeds;
@@ -149,7 +152,9 @@ struct torrentInfo {
   unsigned long long timer;
 
   timer_t timerTimeoutID;
+  timer_t timerChokeID;
   
+
   FILE * logFile;
 
   char * partialDownloadName;
@@ -193,8 +198,11 @@ struct peerInfo {
   int lastWrite;
   int lastMessage;
 
-
   int numPendingSubchunks;
+
+  int downloadAmt;
+  int willUnchoke;
+  int firstChokePass;
 
   int type;
 
@@ -216,10 +224,14 @@ int nonBlockingConnect( char * ip, unsigned short port, int sock ) ;
 int parseTrackerResponse( struct torrentInfo * torrent, 
 			  char * response, int responseLen );
 void sendUnchoke( struct peerInfo * this, struct torrentInfo * t );
+void sendChoke( struct peerInfo * this, struct torrentInfo * t );
 char * generateID();
 unsigned char * computeSHA1( char * data, int size ) ;
 void usage(FILE * file);
 void logToFile( struct torrentInfo * torrent, const char * format, ... ) ;
+
+
+#include "choke.c"
 
 
 int min( int a, int b ) { return a > b ? b : a; }
@@ -584,12 +596,16 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
   toRet->timer = tv.tv_sec * 1000000 + tv.tv_usec;
 
   toRet->timerTimeoutID = 0;
+  toRet->timerChokeID = 0;
+
 
   toRet->peerList = Malloc( 30 * sizeof( struct peerInfo ) );
   toRet->peerListLen = 30;
   for ( i = 0; i < 30; i ++ ) {
     toRet->peerList[i].defined = 0;
   }
+  toRet->optimisticUnchoke = NULL;
+  toRet->chokingIter = 0;
 
   return toRet;
 
@@ -1047,6 +1063,10 @@ void initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   this->numPendingSubchunks = 0;
 
+  this->downloadAmt = 0;
+  this->willUnchoke = 0;
+  this->firstChokePass = 1;
+
   // Slot is taken
   this->defined = 1;
 
@@ -1123,6 +1143,10 @@ void destroyTorrentInfo( ) {
   free( t->peerList );
   Bitfield_Destroy( t->ourBitfield );
   if ( timer_delete( t->timerTimeoutID ) ) {
+    perror("timer_delete");
+    logToFile( t, "SHUTDOWN Error deleting timer.\n");
+  }
+  if ( timer_delete( t->timerChokeID ) ) {
     perror("timer_delete");
     logToFile( t, "SHUTDOWN Error deleting timer.\n");
   }
@@ -1643,7 +1667,6 @@ void handleFullMessage( struct peerInfo * this,
       break; 
     case ( 2 ) :       // Interested
       this->peer_interested = 1; 
-      sendUnchoke( this, torrent );
       logToFile( torrent, 
 		 "MESSAGE INTERESTED FROM %s:%d\n", 
 		 this->ipString, this->portNum);
@@ -1814,6 +1837,22 @@ void sendUnchoke( struct peerInfo * this, struct torrentInfo * t ) {
   char msg[5];
   memmove( &msg[0], &nlenUnchoke, 4 );
   memmove( &msg[4], &unchokeID, 1 );
+  SS_Push( this->outgoingData, msg, 5 );
+
+  return;
+}
+
+void sendChoke( struct peerInfo * this, struct torrentInfo * t ) {
+
+
+  // Send them back an unchoke message.
+  logToFile( t, "SEND MESSAGE CHOKE to %s:%d\n", this->ipString,
+	     this->portNum );
+  int nlenChoke = htonl(1);
+  char chokeID = 0;
+  char msg[5];
+  memmove( &msg[0], &nlenChoke, 4 );
+  memmove( &msg[4], &chokeID, 1 );
   SS_Push( this->outgoingData, msg, 5 );
 
   return;
@@ -2247,6 +2286,8 @@ int main(int argc, char ** argv) {
   // Every 30 seconds, check for idle connections
   t->timerTimeoutID = setupSignal( SIGUSR1, timeoutDetection, 30, t );
 
+  // Every 10 seconds, run the choking algorithm
+  t->timerChokeID = setupSignal( SIGUSR2, chokingHandler, 10, t );
   
 
 
