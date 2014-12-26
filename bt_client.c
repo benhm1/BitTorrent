@@ -42,7 +42,6 @@
 
 */
 
-
 struct argsInfo {
 
   char * saveFile;
@@ -92,11 +91,12 @@ struct subChunk {
 
 struct chunkInfo {
 
+  int idx;
+  int prevalence;
   int size;
   int have;
   int requested; 
   char * data;
-  char * shadow;
   struct timeval tv;
   char hash[20];
   int numSubChunks;
@@ -116,6 +116,9 @@ struct torrentInfo {
   int chunkSize;
   int numChunks;  
   struct chunkInfo * chunks;
+  struct chunkInfo ** chunkOrdering;
+  int numPrevalenceChanges;
+
   
   int completed;
 
@@ -244,6 +247,23 @@ void * Malloc( size_t size ) {
 
 }
 
+int sortChunksComparator( const void * a, const void * b ) {
+  struct chunkInfo * ca = (struct chunkInfo *) a;
+  struct chunkInfo * cb = (struct chunkInfo *) b;
+  
+  return ca->prevalence - cb->prevalence  ;
+  
+}
+
+void sortChunks( struct torrentInfo * t ) {
+
+  if ( t->numPrevalenceChanges > 5 ) {
+    qsort( t->chunkOrdering, t->numChunks, 
+	   sizeof( struct chunkInfo * ), 
+	   sortChunksComparator );
+    t->numPrevalenceChanges = 0;
+  } 
+}
 
 handler_t * setupSignals(int signum, handler_t * handler) {  
   struct sigaction action, old_action; 
@@ -498,14 +518,19 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
     ( toRet->totalSize % toRet->chunkSize ? 1 : 0 );
   toRet->numChunks = numChunks;
   toRet->chunks = Malloc( numChunks * sizeof(struct chunkInfo) );
+  toRet->chunkOrdering = Malloc( numChunks * sizeof( struct chunkInfo * ) );
+  toRet->numPrevalenceChanges = 0;
   for ( i = 0; i < numChunks ; i ++ ) {
+    toRet->chunkOrdering[i] = &toRet->chunks[i];
     memcpy( toRet->chunks[i].hash, chunkHashes + 20*i, 20 );
     toRet->chunks[i].size = ( i == numChunks - 1 ? 
 			      toRet-> totalSize % toRet->chunkSize 
 			      : toRet->chunkSize ) ;
+    toRet->chunks[i].prevalence = 0;
     toRet->chunks[i].have = 0;
     toRet->chunks[i].requested = 0;
     toRet->chunks[i].data = Malloc( toRet->chunks[i].size ) ;
+
 
     int subChunkSize = 1 << 14;
     int numSubChunks = 
@@ -858,6 +883,19 @@ void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) {
   logToFile( torrent, "STATUS Destroying connection: %s:%d\n", 
 	     peer->ipString, peer->portNum);
     
+  // Update chunk prevalence counts for the blocks this 
+  // peer had.
+  int i;
+  int val;
+  for ( i = 0; i < torrent->numChunks; i ++ ) {
+    if ( !Bitfield_Get( peer->haveBlocks, i, &val ) &&
+	 val ) {
+      torrent->chunks[i].prevalence -- ;
+      torrent->numPrevalenceChanges ++ ;
+    }
+  }
+
+
   close( peer->socket );
   Bitfield_Destroy( peer->haveBlocks );
   free( peer->incomingMessageData );
@@ -1103,7 +1141,7 @@ void destroyTorrentInfo( ) {
   struct torrentInfo * t = globalTorrentInfo;
 
   logToFile( t,  "SIGINT Received - Shutting down ... \n");
-  printf("SIGINT Received - Shutting down ... \n");
+  printf("\n\nSIGINT Received - Shutting down ... \n");
 
   // Tell the tracker we're shutting down.
   doTrackerCommunication( t, TRACKER_STOPPED );
@@ -1132,6 +1170,7 @@ void destroyTorrentInfo( ) {
   logToFile( t, "SHUTDOWN Freed data chunks and peer metadata structures\n");
 
   free( t->chunks );
+  free( t->chunkOrdering );
   free( t->name );
   free( t->comment );
   free( t->infoHash );
@@ -1251,6 +1290,9 @@ int handleHaveMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
 	    blockNum, this->ipString, this->portNum );
   int ret = Bitfield_Set( this->haveBlocks, blockNum );
 
+  torrent->chunks[ blockNum ].prevalence ++;
+  torrent->numPrevalenceChanges ++;
+
   // If they are now finished, we should classify them as a seeder
   if ( Bitfield_AllSet( this->haveBlocks) ) {
     if ( this->type == BT_UNKNOWN ) {
@@ -1319,10 +1361,22 @@ int handleBitfieldMessage( struct peerInfo * this,
       if ( torrent->numPeers > torrent->maxPeers ) {
 	ret = -1; // This will lead to destruction of the peer
       }
-
-
     }
   }
+
+  // Update chunk prevalence counts for these blocks
+  int i;
+  int val;
+  for ( i = 0; i < torrent->numChunks; i ++ ) {
+    if ( !Bitfield_Get( this->haveBlocks, i, &val ) &&
+	 val ) {
+      torrent->chunks[i].prevalence ++;
+      torrent->numPrevalenceChanges ++;
+    }
+  }
+
+
+
   return ret;
 
 }
@@ -1914,12 +1968,16 @@ void generateMessages( struct torrentInfo * t ) {
       continue ; // Unused slot
     }
     for ( j = 0; j < t->numChunks; j ++ ) {
+
+      struct chunkInfo * curPtr = 
+	t->chunkOrdering[j];
+
       if ( t->peerList[i].numPendingSubchunks >= MAX_PENDING_SUBCHUNKS ) {
 	break; // This peer already has enough outstanding requests
 	// so we don't want to waste time getting more.
       }
     
-      if ( ! t->chunks[j].have ) {
+      if ( ! curPtr->have ) {
 	struct peerInfo* peerPtr = &(t->peerList[i]);
 	if ( (! Bitfield_Get( peerPtr->haveBlocks, j, &val )) && val ) {
 	  // Our peer has this chunk, and we want it.
@@ -1937,15 +1995,15 @@ void generateMessages( struct torrentInfo * t ) {
 	  // This peer is not choking us. Request up to 
 	  // MAX_PENDING_SUBCHUNKS subchunks from them.
 	  else if ( ! t->peerList[i].peer_choking ) {
-	    for ( k = 0; k < t->chunks[j].numSubChunks; k ++ ) {
+	    for ( k = 0; k < curPtr->numSubChunks; k ++ ) {
 	      if ( t->peerList[i].numPendingSubchunks >= MAX_PENDING_SUBCHUNKS ) {
 		break;
 	      }
-	      if ( t->chunks[j].subChunks[k].have == 0 &&
-		   cur.tv_sec - t->chunks[j].subChunks[k].requestTime > 20 ) {
+	      if ( curPtr->subChunks[k].have == 0 &&
+		   cur.tv_sec - curPtr->subChunks[k].requestTime > 20 ) {
 		sendPieceRequest( &t->peerList[i], t, j, k );
-		t->chunks[j].subChunks[k].requestTime = cur.tv_sec;
-		t->chunks[j].requested = 1;
+		curPtr->subChunks[k].requestTime = cur.tv_sec;
+		curPtr->requested = 1;
 	      }
 	    }
 	  }
@@ -2199,6 +2257,7 @@ void loadPartialResults( struct torrentInfo * t ) {
       t->chunks[i].data = 
 	&t->fileData[ i * t->chunkSize ];
       numExisting ++;
+      t->numBytesDownloaded += t->chunks[i].size;
     }
     free( hash );
   }
@@ -2263,6 +2322,8 @@ int main(int argc, char ** argv) {
     blockSignal( SIGUSR1 );
     blockSignal( SIGUSR2 );
     blockSignal( SIGALRM );
+
+    sortChunks( t ) ;
 
     generateMessages( t );
 
