@@ -119,6 +119,8 @@ struct torrentInfo {
   int numChunks;  
   struct chunkInfo * chunks;
   
+  int completed;
+
   // Torrent File Information
   char * name;
   char * comment; 
@@ -479,6 +481,8 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
       printf("Ignoring Field : %s\n", data->val.d[i].key );
     }
   }
+
+  toRet->completed = 0;
 
   // Now, set up the chunks for the torrent
   int numChunks = toRet->totalSize/toRet->chunkSize + 
@@ -1382,6 +1386,13 @@ int handleRequestMessage( struct peerInfo * this,
   SS_Push( this->outgoingData, torrent->chunks[idx].data + begin, len );
   torrent->numBytesUploaded += len;
 
+  // If the torrent is finished, then we use our own upload
+  // speed for choking purposes instead of our download speed
+  // from them
+  if ( torrent->completed ) {
+    this->downloadAmt += len ;
+  }
+
   return 0;
 }
 
@@ -1451,7 +1462,7 @@ int handlePieceMessage( struct peerInfo * this,
 
   // Update our downloaded stats
   torrent->numBytesDownloaded += dataLen ;
-
+  this->downloadAmt += dataLen ;
   // This chunk is already finished. No need to continue.
   if ( torrent->chunks[ idx ].have ) {
     logToFile( torrent, 
@@ -1534,6 +1545,7 @@ int handlePieceMessage( struct peerInfo * this,
     }
     // Yes, we are!
     doTrackerCommunication( torrent, TRACKER_COMPLETED );
+    torrent->completed = 1;
   }
 
   return 0;
