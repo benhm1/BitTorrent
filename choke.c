@@ -127,17 +127,17 @@ void unchokePeers( struct torrentInfo * t, int num ) {
   /* Unchoke anybody who is uninterested but has sent
      us a lot of data */
   for ( i = 0; i < t->peerListLen; i ++ ) { 
-    if ( ! t->peerList[j].defined ) {
+    if ( ! t->peerList[i].defined ) {
       continue;
     }
-    if ( t->peerList[j].peer_interested ) {
+    if ( t->peerList[i].peer_interested ) {
       // Peer is interested - we've already
       // considered unchoking them
       continue;
     }
 
-    if ( t->peerList[j].downloadAmt > maxSpeed ) {
-      t->peerList[j].willUnchoke = 1;
+    if ( t->peerList[i].downloadAmt > maxSpeed ) {
+      t->peerList[i].willUnchoke = 1;
     }
   }
 

@@ -112,6 +112,7 @@ struct torrentInfo {
   char * announceURL;   // Full tracker URL from .torrent file
   char * trackerDomain; // Truncated URL for DNS queries
   char * trackerIP;     // String IP of tracker server
+  int trackerPort;
 
   // Torrent Chunk Bookkeeping
   int totalSize;
@@ -334,7 +335,7 @@ int doTrackerCommunication( struct torrentInfo * t, int type ) {
     exit(1);
   }
   
-  int error = nonBlockingConnect( t->trackerIP, 6969, sock );
+  int error = nonBlockingConnect( t->trackerIP, t->trackerPort, sock );
   if ( error ) {
     perror("connect to tracker");
     return 60;
@@ -373,6 +374,7 @@ int doTrackerCommunication( struct torrentInfo * t, int type ) {
       break;
     }
     offset += ret;
+    buf[offset] = '\0';
   }
 
   int delay = parseTrackerResponse( t, buf, offset );
@@ -416,14 +418,31 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
       }
       *endPtr = '\0';
 
+      char *portStart, *portEnd;
+      portStart = strdup(endPtr + 1);
+      portEnd = strchr( portStart, '/' );
+      if ( ! portEnd ) {
+	printf("Error - Improperly formatted Annoucen URL - no port after ':'\n");
+	exit(1);
+      }
+      *portEnd = '\0';
+      toRet->trackerPort = atoi( portStart );
+      free( portStart );
+
+
       if ( ! strncmp( toRet->trackerDomain,  "http://", 7 ) ) {
 	char * withoutHTTP = strdup( toRet->trackerDomain + 7 );
 	free( toRet->trackerDomain );
 	toRet->trackerDomain = withoutHTTP;
       }
 
-      printf("Tracker Domain: %s\n", toRet->trackerDomain );
 
+      if ( toRet->trackerPort == 0 ) {
+	printf("Error - Invalid announce port number. Assuming 6969.\n");
+      }
+
+      printf("Tracker Domain: %s\n", toRet->trackerDomain );
+      printf("Tracker Port:   %d\n", toRet->trackerPort );
       toRet->trackerIP = Malloc( 25 * sizeof(char) );
 
       lookupIP( toRet->trackerDomain, toRet->trackerIP );
@@ -684,10 +703,11 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 	   "no_peer_id=1&"
 	   "%s"          // Event string, if present
 	   "%s"          // IP string, if present
-	   "numwant=50 "
-	   "HTTP/1.1\r\nHost: %s:6969\r\n\r\n", 
+	   "numwant=3 "
+	   "HTTP/1.1\r\nHost: %s:%d\r\n\r\n", 
 	   infoHash, peerID, torrent->bindPort, uploaded, 
-	   downloaded, left, event, ip, torrent-> trackerDomain);
+	   downloaded, left, event, ip, torrent-> trackerDomain,
+	   torrent->trackerPort);
   free( infoHash );
   free( peerID );
 
@@ -709,9 +729,9 @@ int parseTrackerResponse( struct torrentInfo * torrent,
   
   peerListPtr += strlen( "5:peers" );
 
-  char * numEnd = strchr( peerListPtr, ':' );
-  if ( ! numEnd ) {
-    return 0; 
+  char * numEnd = peerListPtr;
+  while ( (*numEnd) && (*(numEnd) != ':') ) {
+    numEnd ++ ;
   }
 
   *numEnd = '\0';
@@ -2304,7 +2324,12 @@ int main(int argc, char ** argv) {
   // We can now start our select loop
   fd_set readFDs, writeFDs;
   struct timeval tv;
-
+  
+  blockSignal  ( SIGINT );
+  blockSignal( SIGUSR1 );
+  blockSignal  ( SIGUSR2 );
+  blockSignal  ( SIGALRM );
+ 
 
   while ( 1 ) {
 
@@ -2339,6 +2364,23 @@ int main(int argc, char ** argv) {
     
     printStatus( t );
 
+    // Handle any pending signals 
+
+    // User wants to exit
+    unblockSignal( SIGINT );
+    blockSignal  ( SIGINT );
+
+    // Idle connections timeout
+    unblockSignal( SIGUSR1 );
+    blockSignal( SIGUSR1 );
+
+    // Choking / Unchoking algorithm
+    unblockSignal( SIGUSR2 );
+    blockSignal  ( SIGUSR2 );
+
+    // Tracker checkins
+    unblockSignal( SIGALRM );
+    blockSignal  ( SIGALRM );
 
   }
 
