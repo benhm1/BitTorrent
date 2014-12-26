@@ -160,8 +160,6 @@ struct torrentInfo {
 
   FILE * logFile;
 
-  char * partialDownloadName;
-
   Bitfield * ourBitfield;
 
   int bindAddress;
@@ -469,12 +467,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
 	  toRet->name = Malloc( nameLen * sizeof(char) );
 	  snprintf( toRet->name, nameLen - 1, "%s/%s", 
 		    args->saveFile, infoIter->val.d[j].val->val.s );
-	  int partialNameLen = nameLen + strlen(".partial") ;
-	  toRet->partialDownloadName = Malloc( partialNameLen );
-	  snprintf( toRet->partialDownloadName, partialNameLen, "%s/%s.partial", 
-		    args->saveFile, infoIter->val.d[j].val->val.s );
 	  printf("Torrent Name: %s\n", toRet->name );
-	  printf("Intermediate Progress Name: %s\n", toRet->partialDownloadName );
 	}
 	else if ( 0 == strcmp( key, "pieces" ) ) {
 	  chunkHashesLen = be_str_len( infoIter->val.d[j].val );
@@ -703,7 +696,7 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
 	   "no_peer_id=1&"
 	   "%s"          // Event string, if present
 	   "%s"          // IP string, if present
-	   "numwant=3 "
+	   "numwant=50 "
 	   "HTTP/1.1\r\nHost: %s:%d\r\n\r\n", 
 	   infoHash, peerID, torrent->bindPort, uploaded, 
 	   downloaded, left, event, ip, torrent-> trackerDomain,
@@ -1108,30 +1101,6 @@ void destroyTorrentInfo( ) {
   logToFile( t,  "SIGINT Received - Shutting down ... \n");
   printf("SIGINT Received - Shutting down ... \n");
 
-  logToFile(t, "SHUTDOWN Writing out partial results\n");
-  printf("Writing out partial results of torrent.\n");
-  FILE * progress = fopen( t->partialDownloadName, "w" );
-  if ( progress ) {
-    char toWrite ;
-    for ( i = 0; i < t->numChunks; i ++ ) {
-      toWrite = t->chunks[i].have ? '1' : '0' ;
-      if ( fwrite( &toWrite, 1, 1, progress ) < 1 ) {
-	perror("frwite");
-	logToFile(t, "SHUTDOWN Error with fwrite of progress file.\n");
-	break;
-      }
-    }
-    
-    if ( fclose( progress ) ) {
-      perror("fclose");
-      logToFile( t, "SHUTDOWN Error with fclose of progress file.\n");
-    }
-  } /* fopen successful */
-  else {
-    logToFile( t, "SHUTDOWN Error opening progress file.\n");
-  }
-  printf("Done writing partial download metadata to progress file.\n");
-
   // Tell the tracker we're shutting down.
   doTrackerCommunication( t, TRACKER_STOPPED );
 
@@ -1160,7 +1129,6 @@ void destroyTorrentInfo( ) {
 
   free( t->chunks );
   free( t->name );
-  free( t->partialDownloadName );
   free( t->comment );
   free( t->infoHash );
   free( t->peerID );
@@ -2211,73 +2179,28 @@ void printStatus( struct torrentInfo * t ) {
 }
 
 void loadPartialResults( struct torrentInfo * t ) {
+  int i;
+  int numExisting = 0;
 
-
-
-  if ( access( t->partialDownloadName, R_OK | W_OK ) != -1 ) {
-    // File exists and we can read it and write to it
-    FILE * progress = fopen( t->partialDownloadName, "r" );
-    if ( !progress ) {
-      logToFile( t, "INIT fopen failed on %s.\n",
-		 t->partialDownloadName );
-      perror("fopen");
-      return;
+  for( i = 0; i < t->numChunks; i ++ ) {
+    unsigned char * hash = computeSHA1( &t->fileData[ i * t->chunkSize ],
+					t->chunks[i].size );
+    if ( ! memcmp( hash, t->chunks[i].hash, 20 ) ) {
+      // Final file contents are valid for this block
+      t->chunks[i].have = 1;
+      Bitfield_Set( t->ourBitfield, i );
+      
+      free( t->chunks[i].subChunks );
+      free( t->chunks[i].data );
+      t->chunks[i].data = 
+	&t->fileData[ i * t->chunkSize ];
+      numExisting ++;
     }
-    logToFile( t, "INIT fopen successful on %s.\n",
-	       t->partialDownloadName );
-
-    // Check that there is exactly one byte for each block of the
-    // torrent
-    struct stat st;
-    if ( stat(t->partialDownloadName, &st) ) {
-      logToFile( t, "INIT stat failed on %s.\n",
-		 t->partialDownloadName );
-
-      perror("stat");
-      return;
-    }
-    int size = st.st_size;
-    if ( size != t->numChunks ) {
-      logToFile( t, "INIT progress file has wrong number of chunks!\n");
-      logToFile( t, "INIT Expected: %d  Got: %d\n", t->numChunks, size) ;
-      return;
-    }
-
-    int i, numExisting;
-    numExisting = 0;
-    char ch;
-    for( i = 0; i < t->numChunks; i ++ ) {
-      if ( fread ( &ch, 1, 1, progress ) < 1 ) {
-	perror("fread");
-	logToFile(t, "INIT Error reading from file.");
-      }
-      if ( ch == '1' ) {
-	unsigned char * hash = computeSHA1( &t->fileData[ i * t->chunkSize ],
-					    t->chunks[i].size );
-	if ( ! memcmp( hash, t->chunks[i].hash, 20 ) ) {
-  	  // Final file contents are valid for this block
-	  t->chunks[i].have = 1;
-	  Bitfield_Set( t->ourBitfield, i );
-	  
-	  free( t->chunks[i].subChunks );
-	  free( t->chunks[i].data );
-	  t->chunks[i].data = 
-	    &t->fileData[ i * t->chunkSize ];
-	  numExisting ++;
-	}
-	else {
-	  logToFile(t, "INIT Hash differs on block %d!\n", i );
-	}
-	free( hash );
-      }
-    }
-    logToFile(t, "INIT Validated %d/%d blocks from the torrent.\n",
-	      numExisting, t->numChunks );
-    if ( fclose( progress ) ) {
-      perror("fclose");
-      logToFile(t, "INIT Error fclose partial file.\n");
-    }
+    free( hash );
   }
+  
+  logToFile(t, "INIT Validated %d/%d blocks from the torrent.\n",
+	    numExisting, t->numChunks );
 
   return;
 
@@ -2323,13 +2246,7 @@ int main(int argc, char ** argv) {
   // By this point, we have a list of peers we are connected to.
   // We can now start our select loop
   fd_set readFDs, writeFDs;
-  struct timeval tv;
-  
-  blockSignal  ( SIGINT );
-  blockSignal( SIGUSR1 );
-  blockSignal  ( SIGUSR2 );
-  blockSignal  ( SIGALRM );
- 
+  struct timeval tv; 
 
   while ( 1 ) {
 
@@ -2339,6 +2256,10 @@ int main(int argc, char ** argv) {
     tv.tv_sec = 2;
     tv.tv_usec = 0;
 
+    blockSignal  ( SIGINT );
+    blockSignal( SIGUSR1 );
+    blockSignal  ( SIGUSR2 );
+    blockSignal  ( SIGALRM );
 
     generateMessages( t );
 
@@ -2368,19 +2289,15 @@ int main(int argc, char ** argv) {
 
     // User wants to exit
     unblockSignal( SIGINT );
-    blockSignal  ( SIGINT );
 
     // Idle connections timeout
     unblockSignal( SIGUSR1 );
-    blockSignal( SIGUSR1 );
 
     // Choking / Unchoking algorithm
     unblockSignal( SIGUSR2 );
-    blockSignal  ( SIGUSR2 );
 
     // Tracker checkins
     unblockSignal( SIGALRM );
-    blockSignal  ( SIGALRM );
 
   }
 
