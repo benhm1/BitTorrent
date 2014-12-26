@@ -9,7 +9,7 @@
 
 void blockSignal( int signum );
 void unblockSignal( int signum );
-int setupSignal( int signum, void (*handler)(int, siginfo_t*, void*), 
+timer_t setupSignal( int signum, void (*handler)(int, siginfo_t*, void*), 
 		 int delay, void * value ) ;
 
 

@@ -40,6 +40,9 @@
 
   More intelligent selection of pieces - rarest first?
 
+  Block signals when manipulating key data structures to avoid
+  race conditions.
+
 */
 
 
@@ -144,6 +147,8 @@ struct torrentInfo {
 
   // Startup time ms
   unsigned long long timer;
+
+  timer_t timerTimeoutID;
   
   FILE * logFile;
 
@@ -239,29 +244,10 @@ handler_t * setupSignals(int signum, handler_t * handler) {
 }  
 
 
-void integrityCheck() {
-
-  int i = 0;
-  while ( i < globalTorrentInfo->numChunks &&
-	  ( globalTorrentInfo->chunks[i].have || 
-	    globalTorrentInfo->chunks[i].requested ) ) {
-    i ++ ;
-  }
-  while ( i < globalTorrentInfo->numChunks ) {
-    assert( globalTorrentInfo->chunks[i].requested == 0 );
-    i ++;
-  }
-  return;
-
-}
 
 void timeoutDetection( int sig, siginfo_t * si, void * uc ) {
 
-  integrityCheck() ;
-
   int i;
-
-
 
   struct torrentInfo* t = (struct torrentInfo *) si->si_value.sival_ptr ;
 
@@ -285,8 +271,6 @@ void timeoutDetection( int sig, siginfo_t * si, void * uc ) {
       destroyPeer( &t->peerList[i], t );
     }
   }
-
-  integrityCheck() ;
 
   return;
 
@@ -325,16 +309,6 @@ void trackerCheckin( int sig ) {
 }
 
 int doTrackerCommunication( struct torrentInfo * t, int type ) {
-
-  integrityCheck() ;
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-
 
   // Connect to the tracker server
   int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -386,15 +360,7 @@ int doTrackerCommunication( struct torrentInfo * t, int type ) {
 
   int delay = parseTrackerResponse( t, buf, offset );
 
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
-
   return (delay == 0 ? 60 : delay ) ; // If something went wrong, try again in 1 min
-  
 
 }
 
@@ -611,15 +577,13 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
   
   toRet->timer = tv.tv_sec * 1000000 + tv.tv_usec;
 
+  toRet->timerTimeoutID = 0;
 
   toRet->peerList = Malloc( 30 * sizeof( struct peerInfo ) );
   toRet->peerListLen = 30;
   for ( i = 0; i < 30; i ++ ) {
     toRet->peerList[i].defined = 0;
   }
-
-
-
 
   return toRet;
 
@@ -629,8 +593,6 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
 
 void logToFile( struct torrentInfo * torrent, const char * format, ... ) {
 
-
-  
   va_list args;
   va_start( args, format );
 
@@ -651,14 +613,6 @@ void logToFile( struct torrentInfo * torrent, const char * format, ... ) {
 }
 
 char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
-
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
 
 
   char * request = Malloc( 1024 * sizeof(char)) ;
@@ -703,14 +657,6 @@ char * createTrackerMessage( struct torrentInfo * torrent, int msgType ) {
   free( infoHash );
   free( peerID );
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ; 
-
-
   return request;
 
 }
@@ -719,25 +665,16 @@ int parseTrackerResponse( struct torrentInfo * torrent,
 			  char * response, int responseLen ) {
 
 
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
-
   int i,j;
-
-
 
   // Find the number of bytes designated to peers
   char * peerListPtr = strstr( response, "5:peers" );
   if ( ! peerListPtr ) {
     return 0;
   }
-  peerListPtr += strlen( "5:peers" );
   
+  peerListPtr += strlen( "5:peers" );
+
   char * numEnd = strchr( peerListPtr, ':' );
   if ( ! numEnd ) {
     return 0; 
@@ -849,14 +786,6 @@ int parseTrackerResponse( struct torrentInfo * torrent,
 
   }
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
-
   return interval;
 
 
@@ -865,15 +794,6 @@ int parseTrackerResponse( struct torrentInfo * torrent,
 
 
 void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) {
-
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-
 
   if ( peer->type == BT_PEER ) {
     torrent->numPeers -= 1;
@@ -893,28 +813,11 @@ void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) {
   SS_Destroy( peer->outgoingData );
   peer->defined = 0;
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
-
   return;
 
 }
 
 int getFreeSlot( struct torrentInfo * torrent ) {
-
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
 
   // Find a suitable slot for this peer
   int i;
@@ -937,29 +840,12 @@ int getFreeSlot( struct torrentInfo * torrent ) {
   int retVal = torrent->peerListLen;
   torrent->peerListLen *= 2;
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
-  
   return retVal;
 
 }
 
 
 void peerConnectedToUs( struct torrentInfo * torrent, int listenFD ) {
-
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
 
   struct sockaddr_in remote_addr;
   unsigned int socklen = sizeof(remote_addr);
@@ -987,29 +873,11 @@ void peerConnectedToUs( struct torrentInfo * torrent, int listenFD ) {
   torrent->numUnknown += 1;
   this->type = BT_UNKNOWN;
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
-
   return ;
 
 }
 
 int nonBlockingConnect( char * ip, unsigned short port, int sock ) {
-
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
-
 
   struct sockaddr_in addr;
   addr.sin_family = AF_INET;
@@ -1080,12 +948,6 @@ int nonBlockingConnect( char * ip, unsigned short port, int sock ) {
   }
 
 
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
   return error;
 
 }
@@ -1094,16 +956,6 @@ int nonBlockingConnect( char * ip, unsigned short port, int sock ) {
 int connectToPeer( struct peerInfo * this, 
 		   struct torrentInfo * torrent, 
 		   char * handshake) {
-
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
-
   int res;
 
   char * ip = this->ipString;
@@ -1151,14 +1003,6 @@ int connectToPeer( struct peerInfo * this,
 
   torrent->numUnknown += 1;
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
-
   return 0;
 
 }
@@ -1166,15 +1010,6 @@ int connectToPeer( struct peerInfo * this,
 
 
 void initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
-
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
 
   // Initialize our sending and receiving state and data structures
   this->peer_choking = 1;
@@ -1200,14 +1035,6 @@ void initializePeer( struct peerInfo * this, struct torrentInfo * torrent ) {
 
   // Slot is taken
   this->defined = 1;
-
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
 
   return;
 
@@ -1281,6 +1108,11 @@ void destroyTorrentInfo( ) {
   free( t->peerID );
   free( t->peerList );
   Bitfield_Destroy( t->ourBitfield );
+  if ( timer_delete( t->timerTimeoutID ) ) {
+    perror("timer_delete");
+    logToFile( t, "SHUTDOWN Error deleting timer.\n");
+  }
+
 
   munmap( t->fileData, t->totalSize );
 
@@ -1342,15 +1174,6 @@ int setupReadWriteSets( fd_set * readPtr,
 			fd_set * writePtr, 
 			struct torrentInfo * torrent ) {
 
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
-
   int i;
 
   int maxFD = 0;
@@ -1389,14 +1212,6 @@ int setupReadWriteSets( fd_set * readPtr,
     } /* Peer is defined */
   }
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-
-    integrityCheck() ;
   return maxFD ;
 
 
@@ -1404,14 +1219,6 @@ int setupReadWriteSets( fd_set * readPtr,
 
 int handleHaveMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
 
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
 
   uint32_t blockNum;
   memcpy( &blockNum, &this->incomingMessageData[5], 4 );
@@ -1448,26 +1255,12 @@ int handleHaveMessage( struct peerInfo * this, struct torrentInfo * torrent ) {
   }
 
 
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
-
   return ret;
 }
 
 int handleBitfieldMessage( struct peerInfo * this, 
 			   struct torrentInfo * torrent ) {
 
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
 
   logToFile( torrent, 
 	     "MESSAGE BITFIELD FROM %s:%d\n", 
@@ -1506,15 +1299,6 @@ int handleBitfieldMessage( struct peerInfo * this,
 
     }
   }
-
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-      integrityCheck() ;
-
   return ret;
 
 }
@@ -1522,19 +1306,8 @@ int handleBitfieldMessage( struct peerInfo * this,
 int handleRequestMessage( struct peerInfo * this, 
 			  struct torrentInfo * torrent ) {
 
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
-
   // If we have the block, then break it into chunks and append those requests
   // to this socket's pending queue.
-  
-  
 
   int idx, begin, len;
   memcpy( &idx,   &this->incomingMessageData[5],  4 );
@@ -1574,30 +1347,12 @@ int handleRequestMessage( struct peerInfo * this,
   SS_Push( this->outgoingData, torrent->chunks[idx].data + begin, len );
   torrent->numBytesUploaded += len;
 
-
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
-
   return 0;
 }
 
 
 void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {
 
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-
-    integrityCheck() ;
   int i;
   char msg[9];
   int len = htonl(5);
@@ -1630,14 +1385,6 @@ void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {
     }
   }
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
-
   return;
 
 }
@@ -1645,14 +1392,6 @@ void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {
 int handlePieceMessage( struct peerInfo * this, 
 			struct torrentInfo * torrent ) {
 
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-  
   int idx;
   memcpy( &idx, &this->incomingMessageData[5], 4 );
   idx = ntohl( idx );
@@ -1762,27 +1501,10 @@ int handlePieceMessage( struct peerInfo * this,
     doTrackerCommunication( torrent, TRACKER_COMPLETED );
   }
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
-
   return 0;
 }
 
 void sendBitfield( struct peerInfo * this, struct torrentInfo * torrent ) {
-
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
 
   int len =  torrent->ourBitfield->numBytes + 1;
   char id = 5;
@@ -1794,13 +1516,6 @@ void sendBitfield( struct peerInfo * this, struct torrentInfo * torrent ) {
 	  torrent->ourBitfield->numBytes ); 
   SS_Push( this->outgoingData, message, len + 4 );
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
   return;
 
 }
@@ -1810,13 +1525,6 @@ void handleFullMessage( struct peerInfo * this,
 			struct torrentInfo * torrent ) {
 
 
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-  
   // Log that we heard something from this connection,
   // so that our timeout signal handler doesn't kill it
   struct timeval tv;
@@ -1971,24 +1679,10 @@ void handleFullMessage( struct peerInfo * this,
     this->status = BT_RUNNING ;
   }
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
 }
 
 void handleWrite( struct peerInfo * this, struct torrentInfo * torrent ) {
 
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
 
   int ret; 
   struct timeval tv;
@@ -2006,25 +1700,11 @@ void handleWrite( struct peerInfo * this, struct torrentInfo * torrent ) {
   }
   SS_Pop( this->outgoingData, ret );
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
   return;
 
 }
 
 void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
-
-    integrityCheck() ;
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
 
   int ret;
   ret = read( this->socket, 
@@ -2056,14 +1736,6 @@ void handleRead( struct peerInfo * this, struct torrentInfo * torrent ) {
   if ( this->incomingMessageRemaining == 0 ) {
     handleFullMessage( this, torrent );
   }
-
-
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
   
   return;
 
@@ -2073,15 +1745,6 @@ void handleActiveFDs( fd_set * readFDs,
 		      fd_set * writeFDs, 
 		      struct torrentInfo * torrent, 
 		      int listeningSock ) {
-
-    integrityCheck() ;
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-
   int i;
 
   if ( FD_ISSET( listeningSock, readFDs ) ) {
@@ -2108,24 +1771,10 @@ void handleActiveFDs( fd_set * readFDs,
     }
   }
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
 }
 
 void sendInterested( struct peerInfo * p, struct torrentInfo * t ) {
 
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
 
   int len = htonl(1);
   char id = 2;
@@ -2136,12 +1785,6 @@ void sendInterested( struct peerInfo * p, struct torrentInfo * t ) {
 	     p->portNum);
   SS_Push( p->outgoingData, msg, 5 );
 
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
   return;
 
 }
@@ -2149,13 +1792,6 @@ void sendInterested( struct peerInfo * p, struct torrentInfo * t ) {
 void sendUnchoke( struct peerInfo * this, struct torrentInfo * t ) {
 
 
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-  
   // Send them back an unchoke message.
   logToFile( t, "SEND MESSAGE UNCHOKE to %s:%d\n", this->ipString,
 	     this->portNum );
@@ -2166,13 +1802,6 @@ void sendUnchoke( struct peerInfo * this, struct torrentInfo * t ) {
   memmove( &msg[4], &unchokeID, 1 );
   SS_Push( this->outgoingData, msg, 5 );
 
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-
-    integrityCheck() ;
   return;
 }
 
@@ -2180,14 +1809,6 @@ void sendPieceRequest( struct peerInfo * p,
 		       struct torrentInfo * t , 
 		       int pieceNum, 
 		       int subChunkNum ) {
-
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
 
   char request[17];
 
@@ -2209,13 +1830,6 @@ void sendPieceRequest( struct peerInfo * p,
   SS_Push( p->outgoingData, request, 17 );
 
   p->numPendingSubchunks ++;
-
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
   
 }
 
@@ -2225,12 +1839,6 @@ void sendPieceRequest( struct peerInfo * p,
 void generateMessages( struct torrentInfo * t ) {
 
 
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
 
   int i,j, k,val, ret;
 
@@ -2252,10 +1860,7 @@ void generateMessages( struct torrentInfo * t ) {
       continue ; // Unused slot
     }
     for ( j = 0; j < t->numChunks; j ++ ) {
-      printf("J Is (upper): %d   NR Pending %d   Choking %d   \n", j,
-	     t->peerList[i].numPendingSubchunks, t->peerList[i].peer_choking);
       if ( t->peerList[i].numPendingSubchunks >= MAX_PENDING_SUBCHUNKS ) {
-	printf("Breaking, since peer has too many requests pending.\n");
 	break; // This peer already has enough outstanding requests
 	// so we don't want to waste time getting more.
       }
@@ -2263,7 +1868,6 @@ void generateMessages( struct torrentInfo * t ) {
       if ( ! t->chunks[j].have ) {
 	struct peerInfo* peerPtr = &(t->peerList[i]);
 	if ( (! Bitfield_Get( peerPtr->haveBlocks, j, &val )) && val ) {
-	  printf("Peer has block %d\n", j );
 	  // Our peer has this chunk, and we want it.
 	  t->peerList[i].am_interested = 1;
 	  
@@ -2273,7 +1877,6 @@ void generateMessages( struct torrentInfo * t ) {
 	       (cur.tv_sec - t->peerList[i].lastInterestedRequest) > 5) {
 	    sendInterested( &t->peerList[i], t );
 	    t->peerList[i].lastInterestedRequest = cur.tv_sec;
-	    printf("Breaking, since peer has us choked at the moment.\n");
 	    break;
    	  }
 
@@ -2282,19 +1885,13 @@ void generateMessages( struct torrentInfo * t ) {
 	  else if ( ! t->peerList[i].peer_choking ) {
 	    for ( k = 0; k < t->chunks[j].numSubChunks; k ++ ) {
 	      if ( t->peerList[i].numPendingSubchunks >= MAX_PENDING_SUBCHUNKS ) {
-		printf("Breaking since peer has enough subchunks assigned at the moment.\n");
 		break;
 	      }
-	      printf("Thinking about chunk k=%d. Request time diff: %d\n",
-		     k, cur.tv_sec - t->chunks[j].subChunks[k].requestTime );
 	      if ( t->chunks[j].subChunks[k].have == 0 &&
 		   cur.tv_sec - t->chunks[j].subChunks[k].requestTime > 20 ) {
-		printf("Requesting chunk j.\n");
 		sendPieceRequest( &t->peerList[i], t, j, k );
 		t->chunks[j].subChunks[k].requestTime = cur.tv_sec;
 		t->chunks[j].requested = 1;
-		printf("J Is (lower): %d\n", j );
-		logToFile( t, "Requesting chunk %d\n", j );
 	      }
 	    }
 	  }
@@ -2308,20 +1905,12 @@ void generateMessages( struct torrentInfo * t ) {
 
 	    
 	} /* If they have this block */
-	else {
-	  printf("Peer does not have block %d\n", j );
-	}
       }   /* If we don't have this block */
 
     } /* For all blocks */
   }  /* For all peers */
 
 
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
 
 }
 
@@ -2494,13 +2083,6 @@ char * generateID() {
 
 void printStatus( struct torrentInfo * t ) {
 
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
-
   int i;
   struct timeval tv;
   if ( gettimeofday( &tv, NULL ) ){
@@ -2525,7 +2107,7 @@ void printStatus( struct torrentInfo * t ) {
       printf("X");
     }
     else if ( t->chunks[i].requested ) {
-      printf("%d", i );
+      printf("x");
     }
     else {
       printf(".");
@@ -2543,13 +2125,6 @@ void printStatus( struct torrentInfo * t ) {
 	     1.0*t->numBytesDownloaded/1000, 
 	     1.0*t->numBytesUploaded/1000 );
 	     
-
-
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
 
 }
 
@@ -2653,10 +2228,10 @@ int main(int argc, char ** argv) {
   alarm( 30 );  
 
   // When the user hits Ctrl^C, exit
-  setupSignal( SIGINT, destroyTorrentInfo, 0, t );
+  setupSignals( SIGINT, destroyTorrentInfo );
 
   // Every 30 seconds, check for idle connections
-  setupSignal( SIGUSR1, timeoutDetection, 30, t );
+  t->timerTimeoutID = setupSignal( SIGUSR1, timeoutDetection, 30, t );
 
   
 
@@ -2668,13 +2243,6 @@ int main(int argc, char ** argv) {
 
 
   while ( 1 ) {
-
-    int iter;
-    for ( iter = 0; iter < globalTorrentInfo->numChunks; iter++ ) {
-      assert(  globalTorrentInfo->chunks[iter].requested == 0 ||
-	       globalTorrentInfo->chunks[iter].requested == 1 );
-    }
-    integrityCheck() ;
 
     FD_ZERO( &readFDs );
     FD_ZERO( &writeFDs );

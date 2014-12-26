@@ -31,8 +31,8 @@ void unblockSignal( int signum ) {
 
 }
 
-int setupSignal( int signum, void (*handler)(int, siginfo_t*, void*), 
-		 int delay, void * value ) {
+timer_t setupSignal( int signum, void (*handler)(int, siginfo_t*, void*), 
+		     int delay, void * value ) {
   /*
     Sets up a signal handler for signal signum that will run after a 
     delay of delay seconds and pass the value value into the handler as an
@@ -76,7 +76,7 @@ int setupSignal( int signum, void (*handler)(int, siginfo_t*, void*),
 
   unblockSignal( signum );
 
-  return 0;
+  return timerid;
 
 }
 
