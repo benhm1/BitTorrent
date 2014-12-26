@@ -1,0 +1,73 @@
+Odd Behavior:
+
+At this point, our client requests pieces in ascending order.
+The odd behavior was that, in some cases, high numbered pieces
+would be requested before earlier ones. I worried this might
+be indicative of some operation overwriting the data structures
+or trashing the stack in some way. Since the structure is pretty 
+large, and we do SHA1 checking, this trashing of state wouldn't necessarily
+be fatal.
+
+Here is some output from GDB.
+
+bt_client: bt_client.c:253: integrityCheck: Assertion `globalTorrentInfo->chunks[i].requested == 0' failed.
+Program received signal SIGABRT, Aborted.
+. . .
+(gdb) bt
+...
+#4  0x0000000000402e24 in integrityCheck () at bt_client.c:253
+#5  0x0000000000408fea in sendPieceRequest (p=0x62a8b0, t=0x60f320, pieceNum=2063, subChunkNum=1) at bt_client.c:2192
+#6  0x000000000040957d in generateMessages (t=0x60f320) at bt_client.c:2286
+#7  0x000000000040a5e6 in main (argc=7, argv=0x7fffffffe868) at bt_client.c:2674
+
+It turned out in this case, that chunk 2063 had been marked as requested. 
+More accurately, it had been requested. 
+(gdb) frame 4
+#4  0x0000000000402e24 in integrityCheck () at bt_client.c:253
+253     assert( globalTorrentInfo->chunks[i].requested == 0 );
+(gdb) p i
+$1 = 2063
+(gdb) p globalTorrentInfo->chunks[i].requested
+$2 = 1
+(gdb) p globalTorrentInfo->chunks[2063].requested
+$3 = 1
+
+(gdb) frame 6
+#6  0x000000000040957d in generateMessages (t=0x60f320) at bt_client.c:2286
+2286		       	  		   sendPieceRequest( &t->peerList[i], t, j, k );
+(gdb) p t->peerList[i]
+$9 = {defined = 1, ipString = "91.189.95.21\000\000\211E", portNum = 6882, socket = 28, status = 5, peer_choking = 0, am_choking = 1, peer_interested = 0, 
+  am_interested = 1, haveBlocks = 0x613000, readingHeader = 1, incomingMessageRemaining = 4, incomingMessageData = 0x6131d0 "", incomingMessageOffset = 0, 
+  outgoingData = 0x6131a0, lastInterestedRequest = 0, lastWrite = 1419565931, lastMessage = 1419565931, numPendingSubchunks = 1, type = 1}
+
+Further, it looked like this peer did actually have block 2063,
+but no other blocks.
+
+(gdb) p t->peerList[i].haveBlocks
+$10 = (Bitfield *) 0x613000
+(gdb) p t->peerList[i].haveBlocks->numBytes
+$12 = 283
+(gdb) p t->peerList[i].haveBlocks->buffer[ 2063/8 ]
+$13 = 1 '\001'
+(gdb) p/x t->peerList[i].haveBlocks->buffer[ 2063/8 ]
+$14 = 0x1
+
+This was verified by the log.
+
+lime[torrent]$ grep 91.189.95 /local/bmarks1/log7
+[   94.7038] HANDSHAKE INIT 91.189.95.21:6882
+[   94.7038] STATUS Initializing 91.189.95.21:6882 - SUCCESS
+[   98.4488] HANDSHAKE SUCCESS 91.189.95.21:6882
+[   98.4761] MESSAGE UNCHOKE FROM 91.189.95.21:6882
+[   98.4882] MESSAGE HAVE 2063 FROM 91.189.95.21:6882 
+[   98.4918] SEND REQUEST 2063.0 ( 0-16384 ) FROM 91.189.95.21
+
+So, this "odd" behavior was really ocurring because, when deciding
+which pieces to ask for, we asked for the lowest pieces that our
+connected peers had. Since most peers are seeds for this torrent,
+in most cases the next pieces that we wanted our peers could give us.
+
+However, in some cases, a connected peer only had higher numbered 
+blocks, which we'd ask for. 
+
+So, this wasn't a bug after all. :)
