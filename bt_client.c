@@ -554,6 +554,13 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
   toRet->infoHash = computeSHA1( string, fsize );
   free( string );
 
+  // Remove the file infoDict.bencoding, since we don't need it anymore
+  if ( remove( "infoDict.bencoding" ) ) {
+    perror("remove");
+    printf("Error removing 'infoDict.bencoding' file.\n"
+	   "Please delete it manually at your convenience.\n");
+  }
+
   // Initialize the peer ID;
   toRet->peerID = Malloc( 20 );
   memcpy( toRet->peerID, args->nodeID, 20 );
@@ -2256,10 +2263,9 @@ int main(int argc, char ** argv) {
     tv.tv_sec = 2;
     tv.tv_usec = 0;
 
-    blockSignal  ( SIGINT );
     blockSignal( SIGUSR1 );
-    blockSignal  ( SIGUSR2 );
-    blockSignal  ( SIGALRM );
+    blockSignal( SIGUSR2 );
+    blockSignal( SIGALRM );
 
     generateMessages( t );
 
@@ -2286,9 +2292,6 @@ int main(int argc, char ** argv) {
     printStatus( t );
 
     // Handle any pending signals 
-
-    // User wants to exit
-    unblockSignal( SIGINT );
 
     // Idle connections timeout
     unblockSignal( SIGUSR1 );
