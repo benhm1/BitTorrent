@@ -1224,19 +1224,9 @@ int setupReadWriteSets( fd_set * readPtr,
 
   for ( i = 0; i < torrent->peerListLen; i ++ ) {
     if ( torrent->peerList[i].defined ) {
-
-      // We want to read from anybody who meets any of the following criteria
-      //   * We are waiting for a handshake response
-      //   * We are not choking them
-      if ( torrent->peerList[i].status == BT_AWAIT_INITIAL_HANDSHAKE ||
-	   torrent->peerList[i].status == BT_AWAIT_RESPONSE_HANDSHAKE ||
-	   1 ) {
-
-	FD_SET( torrent->peerList[i].socket, readPtr );
-	if ( maxFD < torrent->peerList[i].socket ) {
-	  maxFD = torrent->peerList[i].socket;
-	}
-
+      FD_SET( torrent->peerList[i].socket, readPtr );
+      if ( maxFD < torrent->peerList[i].socket ) {
+	maxFD = torrent->peerList[i].socket;
       }
 
       // We want to write to anybody who has data pending
@@ -1344,8 +1334,6 @@ int handleBitfieldMessage( struct peerInfo * this,
 int handleRequestMessage( struct peerInfo * this, 
 			  struct torrentInfo * torrent ) {
 
-  // If we have the block, then break it into chunks and append those requests
-  // to this socket's pending queue.
 
   int idx, begin, len;
   memcpy( &idx,   &this->incomingMessageData[5],  4 );
@@ -1357,6 +1345,15 @@ int handleRequestMessage( struct peerInfo * this,
 
   logToFile( torrent, "MESSAGE REQUEST BLOCK %d FROM %s:%d\n", 
 	     idx, this->ipString, this->portNum );
+
+  // If this is a peer and they are choked, then don't respond
+  if( this->type == BT_PEER && this->am_choking ) {
+    logToFile(torrent, 
+	      "WARNING Request from %s:%d, who is choked.\n",
+	      this->ipString, this->portNum );
+    return -1;
+  }
+
 
   if ( ! torrent->chunks[idx].have ) {
     logToFile( torrent, 
