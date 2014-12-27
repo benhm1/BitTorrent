@@ -1,213 +1,26 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdarg.h>
 
-#include <string.h>
+#include "common.h"
 
-#include "bencode.h"
-#include <assert.h>
-#include <openssl/sha.h> //hashing pieces
-#include "percentEncode.h"
-
-#include <netdb.h>
-#include <time.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/uio.h>
-#include <sys/time.h>
-#include <sys/mman.h>
-#include <sys/signal.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <errno.h>
-#include <signal.h>
-#include <ifaddrs.h>
-
-#include <fcntl.h>
-
-
-#include "StringStream/StringStream.h"
+#include "utils/choke.h"
 #include "bitfield/bitfield.h"
+#include "StringStream/StringStream.h"
+#include "utils/bencode.h"
+#include "percentEncode.h"
 #include "timer/timer.h"
 
-#define EAGLE_HACK 1
-
 /*
-  Todos - 
+  Force all tracker replies to include the peer
+  at IP IP0.IP1.IP2.IP3:PORT
+ */
+#define TRACKER_RESP_HACK 
+#ifdef  TRACKER_RESP_HACK
+#define IP0  130
+#define IP1  58
+#define IP2  68
+#define IP3  210
+#define PORT 6800
+#endif
 
-  More intelligent selection of pieces - rarest first?
-
-*/
-
-struct argsInfo {
-
-  char * saveFile;
-  char * logFile ;
-  char * nodeID;
-  char * fileName;
-  int maxPeers;
-  int bindAddress ;
-  unsigned short bindPort;
-
-};
-
-
-#define BT_CONNECTED 1
-#define BT_AWAIT_INITIAL_HANDSHAKE 2  
-#define BT_AWAIT_RESPONSE_HANDSHAKE 3
-#define BT_AWAIT_BITFIELD 4
-#define BT_RUNNING 5
-
-#define BT_PEER 1
-#define BT_SEED 2
-#define BT_UNKNOWN 3
-
-#define TRACKER_STARTED 1
-#define TRACKER_STOPPED 2
-#define TRACKER_COMPLETED 3
-#define TRACKER_STATUS 4
-
-#define PEER_LISTEN_PORT 6881
-#define BACKLOG 20
-
-#define MAX_PENDING_SUBCHUNKS 10
-#define MAX_TIMEOUT_WAIT 20
-typedef void handler_t(int);
-
-struct subChunk {
-
-  int start;
-  int end;
-  int len;
-  int have;
-  int requested;
-  int requestTime;
-
-};
-
-
-struct chunkInfo {
-
-  int idx;
-  int prevalence;
-  int size;
-  int have;
-  int requested; 
-  char * data;
-  struct timeval tv;
-  char hash[20];
-  int numSubChunks;
-  struct subChunk * subChunks;
-
-};
-
-struct torrentInfo {
-
-  char * announceURL;   // Full tracker URL from .torrent file
-  char * trackerDomain; // Truncated URL for DNS queries
-  char * trackerIP;     // String IP of tracker server
-  int trackerPort;
-
-  // Torrent Chunk Bookkeeping
-  int totalSize;
-  int chunkSize;
-  int numChunks;  
-  struct chunkInfo * chunks;
-  struct chunkInfo ** chunkOrdering;
-  int numPrevalenceChanges;
-
-  
-  int completed;
-
-  // Torrent File Information
-  char * name;
-  char * comment; 
-  int date;
-
-  char * fileData;
-
-  // Hash of bencoded dictioanry in .torrent file
-  unsigned char * infoHash;
-
-  char * peerID;
-
-  struct peerInfo * peerList;
-  int peerListLen;
-
-  struct peerInfo * optimisticUnchoke;
-  int chokingIter;
- 
-  int numPeers;
-  int numSeeds;
-  int numUnknown;
-  int maxPeers;
-  
-
-  long long numBytesDownloaded;
-  long long numBytesUploaded  ;
-
-  int lastPrint;
-
-  // Startup time ms
-  unsigned long long timer;
-
-  timer_t timerTimeoutID;
-  timer_t timerChokeID;
-  
-
-  FILE * logFile;
-
-  Bitfield * ourBitfield;
-
-  int bindAddress;
-  unsigned short bindPort;
-
-};
-
-
-struct peerInfo {
-
-  int defined; // Is this slot in use or not
-
-  char ipString[16];
-  unsigned short portNum;
-  int socket ;
-
-  int status ;
-
-  // Boolean state variables
-  int peer_choking ;
-  int am_choking ;
-  int peer_interested ;
-  int am_interested ;
-
-  // Bitfield of their blocks
-  Bitfield * haveBlocks ;
-
-  int readingHeader;
-  int incomingMessageRemaining ;
-  char * incomingMessageData ;
-
-  int incomingMessageOffset;
-
-  StringStream * outgoingData ;
-
-  int lastInterestedRequest;
-  int lastWrite;
-  int lastMessage;
-
-  int numPendingSubchunks;
-
-  int downloadAmt;
-  int willUnchoke;
-  int firstChokePass;
-
-  int type;
-
-};
 
 // Global variable for signal handling
 struct torrentInfo * globalTorrentInfo;
@@ -219,6 +32,7 @@ int connectToPeer( struct peerInfo * this,
 		   char * handshake) ;
 int getFreeSlot( struct torrentInfo * torrent ) ;
 char * createTrackerMessage( struct torrentInfo * torrent, int msgType );
+typedef void handler_t(int);
 handler_t * setupSignals(int signum, handler_t * handler);
 int doTrackerCommunication( struct torrentInfo * t, int type );
 int nonBlockingConnect( char * ip, unsigned short port, int sock ) ;
@@ -232,7 +46,7 @@ void usage(FILE * file);
 void logToFile( struct torrentInfo * torrent, const char * format, ... ) ;
 
 
-#include "choke.c"
+
 
 
 int min( int a, int b ) { return a > b ? b : a; }
@@ -799,20 +613,20 @@ int parseTrackerResponse( struct torrentInfo * torrent,
   memcpy( &handshake[28], torrent->infoHash, 20 );
   memcpy( &handshake[48], torrent->peerID, 20 );
 
-  #ifdef EAGLE_HACK
-  // Force us to connect to our simultaneous instance on eagle.cs.swarthmore.edu
+  #ifdef TRACKER_RESP_HACK
+  // Overwrite the first peer with a particular IP and port
   if ( numBytes / 6 > 0 ) {
     char fake[6];
     char * ptr = fake;
-    char fake1 = 130;
+    char fake1 = IP0;
     memcpy( ptr, &fake1, 1 );
-    fake1 = 58;
+    fake1 = IP1;
     memcpy( ptr+1, &fake1, 1 );
-    fake1 = 68;
+    fake1 = IP2;
     memcpy( ptr+2, &fake1, 1 );
-    fake1 = 210;
+    fake1 = IP3;
     memcpy( ptr+3, &fake1, 1 );
-    short fakePort = htons(6882);
+    short fakePort = htons( PORT );
     memcpy( ptr+4, &fakePort, 2 );
     memcpy( peerListPtr, ptr, 6 );
   } 

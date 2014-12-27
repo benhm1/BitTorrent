@@ -1,18 +1,9 @@
 
-/*
+#include "../common.h"
 
-  struct peerInfo * unchokedPeers[4];
-
-  int chokingIter;
-  struct peerInfo * unchokedPeers[4];
-  stuct peerInfo * optimisticUnchoked;
-
-
-  t->unchokedPeers is a peerInfo **, that is
-  t->unchokedPeers[0] is a peerInfo * pointing to the
-  fastest peer;
- */
-
+extern void * Malloc( size_t );
+extern void sendChoke( struct peerInfo *, struct torrentInfo * );
+extern void sendUnchoke( struct peerInfo *, struct torrentInfo * );
 
 int optimisticUnchoke( struct torrentInfo * t ) {
   /*
@@ -62,30 +53,12 @@ int optimisticUnchoke( struct torrentInfo * t ) {
 
 }
 
-int comparePeersDownload( void * p1, void * p2 ) {
-  
-  // Handle null elements
-  if ( !p1 && !p2 ) {
-    return 0;
-  }
-  if ( !p1 && p2 ) {
-    return -1;
-  }
-  if ( !p2 && p1 ) {
-    return 1;
-  }
-
-  struct peerInfo * peer1 = (struct peerInfo *) p1;
-  struct peerInfo * peer2 = (struct peerInfo *) p2;
-  
-  return peer1->downloadAmt - peer2->downloadAmt ;
-
-}
-
 void unchokePeers( struct torrentInfo * t, int num ) {
 
   int i, j;
 
+  // Set willUnchoke to zero for all peers except the
+  // optimisticllly unchoked one.
   for ( i = 0; i < t->peerListLen; i ++ ) {
     if ( ! t->peerList[i].defined ) {
       continue;
@@ -96,6 +69,8 @@ void unchokePeers( struct torrentInfo * t, int num ) {
     }
   }
   
+  // Set willUnchoke to 1 for the top NUM peers who are
+  // interested in downloading from us.
   int maxSpeed, maxIdx;
   for ( i = 0; i < num; i ++ ) {
     maxSpeed = maxIdx = -1;
@@ -184,7 +159,7 @@ void sendChokeUnchokeMessages( struct torrentInfo * t ) {
 
 }
 
-int manageChoking( struct torrentInfo * t ) {
+void manageChoking( struct torrentInfo * t ) {
 
   // Every 30 seconds, choose a random peer to be optimistically unchoked
   if ( !((t->chokingIter ++) % 3) ) {
@@ -211,7 +186,7 @@ int manageChoking( struct torrentInfo * t ) {
     }
   }
 
-  return 0;
+  return ;
 
 }
 
