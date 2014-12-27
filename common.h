@@ -62,7 +62,6 @@
 // How long should we wait for idle connections before closing them?
 #define MAX_TIMEOUT_WAIT 20 
 
-
 /***************************************************
   Structure Definitions
 ****************************************************/
@@ -290,6 +289,12 @@ struct peerInfo {
 
 
 };
+
+
+/*
+  Global variable for signal handling
+*/
+struct torrentInfo * globalTorrentInfo;
 
 
 #endif
