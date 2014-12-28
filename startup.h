@@ -81,4 +81,19 @@ void usage(FILE * file);
  */
 char * generateID() ;
 
+
+/*
+  loadPartialResults - check if any of the blocks in the file have already
+  been downloaded by comparing a SHA1 hash of the file data to what we 
+  expect to get. Mark any downloaded blocks as complete.
+
+  Arguments:
+  => t - torrentInfo struct for current download
+
+  Returns: Nothing.
+ */
+void loadPartialResults( struct torrentInfo * t ) ;
+
+
+
 #endif

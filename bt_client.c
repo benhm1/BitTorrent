@@ -1,4 +1,9 @@
 
+/*
+  bt_client.c - Function definitions for the main select loop and handling 
+  I/O with connected peers and seeds.
+*/
+
 #include "common.h"
 
 #include "utils/choke.h"
@@ -14,6 +19,7 @@
 #include "startup.h"
 #include "managePeers.h"
 #include "utils/algorithms.h"
+#include "bt_client.h"
 
 /*
   Force all tracker replies to include the peer
@@ -28,25 +34,6 @@
 #define PORT 6800
 #endif
 
-
-
-void initializePeer( struct peerInfo * thisPtr, struct torrentInfo * torrent );
-void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) ;
-int connectToPeer( struct peerInfo * this, 
-		   struct torrentInfo * torrent , 
-		   char * handshake) ;
-int getFreeSlot( struct torrentInfo * torrent ) ;
-char * createTrackerMessage( struct torrentInfo * torrent, int msgType );
-handler_t * setupSignals(int signum, handler_t * handler);
-int doTrackerCommunication( struct torrentInfo * t, int type );
-int nonBlockingConnect( char * ip, unsigned short port, int sock ) ;
-int parseTrackerResponse( struct torrentInfo * torrent, 
-			  char * response, int responseLen );
-void sendUnchoke( struct peerInfo * this, struct torrentInfo * t );
-void sendChoke( struct peerInfo * this, struct torrentInfo * t );
-char * generateID();
-unsigned char * computeSHA1( char * data, int size ) ;
-void usage(FILE * file);
 
 
 
@@ -253,7 +240,6 @@ void handleActiveFDs( fd_set * readFDs,
 
 
 
-
 void generateMessages( struct torrentInfo * t ) {
 
 
@@ -382,35 +368,6 @@ void printStatus( struct torrentInfo * t ) {
 	     1.0*t->numBytesDownloaded/1000, 
 	     1.0*t->numBytesUploaded/1000 );
 	     
-
-}
-
-void loadPartialResults( struct torrentInfo * t ) {
-  int i;
-  int numExisting = 0;
-
-  for( i = 0; i < t->numChunks; i ++ ) {
-    unsigned char * hash = computeSHA1( &t->fileData[ i * t->chunkSize ],
-					t->chunks[i].size );
-    if ( ! memcmp( hash, t->chunks[i].hash, 20 ) ) {
-      // Final file contents are valid for this block
-      t->chunks[i].have = 1;
-      Bitfield_Set( t->ourBitfield, i );
-      
-      free( t->chunks[i].subChunks );
-      free( t->chunks[i].data );
-      t->chunks[i].data = 
-	&t->fileData[ i * t->chunkSize ];
-      numExisting ++;
-      t->numBytesDownloaded += t->chunks[i].size;
-    }
-    free( hash );
-  }
-  
-  logToFile(t, "INIT Validated %d/%d blocks from the torrent.\n",
-	    numExisting, t->numChunks );
-
-  return;
 
 }
 

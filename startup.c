@@ -467,3 +467,33 @@ char * generateID() {
   return (char*)computeSHA1( starter, 128 );
  
 }
+
+
+void loadPartialResults( struct torrentInfo * t ) {
+  int i;
+  int numExisting = 0;
+
+  for( i = 0; i < t->numChunks; i ++ ) {
+    unsigned char * hash = computeSHA1( &t->fileData[ i * t->chunkSize ],
+					t->chunks[i].size );
+    if ( ! memcmp( hash, t->chunks[i].hash, 20 ) ) {
+      // Final file contents are valid for this block
+      t->chunks[i].have = 1;
+      Bitfield_Set( t->ourBitfield, i );
+      
+      free( t->chunks[i].subChunks );
+      free( t->chunks[i].data );
+      t->chunks[i].data = 
+	&t->fileData[ i * t->chunkSize ];
+      numExisting ++;
+      t->numBytesDownloaded += t->chunks[i].size;
+    }
+    free( hash );
+  }
+  
+  logToFile(t, "INIT Validated %d/%d blocks from the torrent.\n",
+	    numExisting, t->numChunks );
+
+  return;
+
+}
