@@ -5,6 +5,8 @@
 #include <time.h>
 
 
+#include "timer.h"
+
 void blockSignal( int signum ) {
 
   sigset_t mask;

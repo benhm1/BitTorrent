@@ -7,8 +7,6 @@
 #include "StringStream.h"
 
 
-extern void * Malloc( size_t size ) ;
-
 
 StringStream * SS_Init() {
 
@@ -30,6 +28,9 @@ void SS_Destroy( StringStream * s ) {
 
 }
 
+
+/* Returns the lowest power of 2 that is greater than
+   or equal to the passed in parameter */
 static int roundToTwo( int x ) {
 
   if ( x < 0 ) {
@@ -48,7 +49,18 @@ static int roundToTwo( int x ) {
 
 }
 
-void SS_EnsureCapacity( StringStream * s, int newLen ) {
+/*
+  SS_EnsureCapacity - Ensure that the stream can fit 
+  at least newLen additional bytes of data. 
+
+  First checks if the data could fit between the tail pointer and
+  the end of the array. If not, checks if the data could fit between
+  the tail pointer and the end of the array after moving all data to
+  the front of the array. Finally, allocates a larger buffer if needed.
+
+  
+ */
+static void SS_EnsureCapacity( StringStream * s, int newLen ) {
   // Can we fit this at the end of our current array ?
 
   int bytesRemaining = ( s->data + s->capacity ) - s->tail ;
