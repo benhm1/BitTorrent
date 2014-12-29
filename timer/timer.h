@@ -8,9 +8,6 @@
 #include <signal.h>
 #include <time.h>
 
-/* Mac Compilation Issue */
-typedef	int	timer_t;
-
 void blockSignal( int signum );
 void unblockSignal( int signum );
 timer_t setupSignal( int signum, void (*handler)(int, siginfo_t*, void*), 

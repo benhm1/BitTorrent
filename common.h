@@ -31,8 +31,6 @@
 #include "bitfield/bitfield.h"
 #include "StringStream/StringStream.h"
 
-
-
 /***************************************************
   Preprocessor defined variables     
 ****************************************************/

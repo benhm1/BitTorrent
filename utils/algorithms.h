@@ -11,6 +11,7 @@
 #include "../common.h"
 #include "base.h"
 #include "../managePeers.h"
+#include "../StringStream/StringStream.h"
 
 /*
   sortChunksComparator - comparison function used to compare two chunks

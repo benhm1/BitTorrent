@@ -8,10 +8,11 @@
 
 #include "../common.h"
 #include "../utils/percentEncode.h"
+#include "../utils/base.h"
 
 extern int getFreeSlot( struct torrentInfo * torrent ) ;
-extern int nonBlockingConnect( char * ip, unsigned short port, int sock ) ;
-extern void logToFile( struct torrentInfo * torrent, const char * format, ... ) ;
+//extern int nonBlockingConnect( char * ip, unsigned short port, int sock ) ;
+//extern void logToFile( struct torrentInfo * torrent, const char * format, ... ) ;
 extern int connectToPeer( struct peerInfo * this, 
 			  struct torrentInfo * torrent , 
 			  char * handshake) ;

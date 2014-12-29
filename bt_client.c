@@ -6,6 +6,7 @@
 
 #include "common.h"
 
+#include "utils/base.h"
 #include "utils/choke.h"
 #include "bitfield/bitfield.h"
 #include "StringStream/StringStream.h"
@@ -15,7 +16,6 @@
 #include "messages/outgoingMessages.h"
 #include "messages/incomingMessages.h"
 #include "messages/tracker.h"
-#include "utils/base.h"
 #include "startup.h"
 #include "managePeers.h"
 #include "utils/algorithms.h"

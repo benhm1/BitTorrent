@@ -9,9 +9,10 @@
 
 #include "../common.h"
 #include "outgoingMessages.h"
+#include "../utils/base.h"
 
-extern void logToFile( struct torrentInfo * torrent, const char * format, ... ) ;
-extern unsigned char * computeSHA1( char * data, int size ) ;
+//extern void logToFile( struct torrentInfo * torrent, const char * format, ... ) ;
+//extern unsigned char * computeSHA1( char * data, int size ) ;
 extern void destroyPeer( struct peerInfo * peer, struct torrentInfo * torrent ) ;
 extern int doTrackerCommunication( struct torrentInfo * t, int type );
 

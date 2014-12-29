@@ -13,10 +13,8 @@
 
 */
 
-#include "../common.h"
 #include "outgoingMessages.h"
 
-extern void logToFile( struct torrentInfo * torrent, const char * format, ... ) ;
 
 
 void broadcastHaveMessage( struct torrentInfo * torrent, int blockIdx ) {

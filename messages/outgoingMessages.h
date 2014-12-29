@@ -16,6 +16,7 @@
 */
 
 #include "../common.h"
+extern void logToFile( struct torrentInfo *, const char *, ... );
 
 /*
   broadcastHaveMessage - Send a HAVE message to all of our connected peers

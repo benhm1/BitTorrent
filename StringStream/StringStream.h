@@ -7,8 +7,7 @@
   buffer and reading data from the start of the buffer.
  */
 
-#include "common.h"
-#include "../utils/base.h"
+extern void * Malloc( size_t );
 
 typedef struct {
 
