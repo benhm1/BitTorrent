@@ -15,12 +15,35 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
 
   struct torrentInfo * toRet = Malloc( sizeof( struct torrentInfo ) );
 
+  // Initialize our log file
+  FILE * logFile = 
+    fopen( args->logFile, "w+" ) ;
+  if ( logFile < 0 ) {
+    perror("open");
+    exit(1);
+  }
+  toRet->logFile = logFile;
+
+  // Get our startup time
+  struct timeval tv;
+  if ( gettimeofday( &tv, NULL ) ) {
+    perror("gettimeofday");
+    exit(1);
+  }
+  toRet->timer = tv.tv_sec * 1000000 + tv.tv_usec;
+
+  // By this point - we have enough state to call
+  // logToFile on the torrentInfo struct.
+
+  logToFile( toRet, "BitTorrent Client Starting Up!\n");
+
   for ( i = 0; data->val.d[i].val != NULL; i ++ ) {
 
     // Keys can include: announce (string) and info (dict), among others
     if ( 0 == strcmp( data->val.d[i].key, "announce" ) ) {
       toRet->announceURL = strdup( data->val.d[i].val->val.s );
       printf("Announce URL: %s\n", toRet->announceURL);
+      logToFile( toRet, "STARTUP Announce URL: %s\n", toRet->announceURL);
 
       toRet->trackerDomain = strdup( toRet->announceURL );
       char * endPtr = strrchr( toRet->trackerDomain, ':' );
@@ -54,11 +77,14 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
       }
 
       printf("Tracker Domain: %s\n", toRet->trackerDomain );
+      logToFile( toRet, "STARTUP Tracker Domain: %s\n", toRet->trackerDomain );
       printf("Tracker Port:   %d\n", toRet->trackerPort );
+      logToFile( toRet, "STARTUP Tracker Port:   %d\n", toRet->trackerPort );
       toRet->trackerIP = Malloc( 25 * sizeof(char) );
 
       lookupIP( toRet->trackerDomain, toRet->trackerIP, 25 );
       printf("Tracker Domain IP: %s\n", toRet->trackerIP );
+      logToFile( toRet, "STARTUP Tracker Domain IP: %s\n", toRet->trackerIP );
 
     }
     else if ( 0 == strcmp( data->val.d[i].key, "info" ) ) {
@@ -70,10 +96,12 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
 	if ( 0 == strcmp( key, "length" ) ) {
 	  toRet->totalSize = infoIter->val.d[j].val->val.i;
 	  printf("Torrent Size: %d\n", toRet->totalSize );
+	  logToFile( toRet, "STARTUP Torrent Size: %d\n", toRet->totalSize );
 	}
 	else if ( 0 == strcmp( key, "piece length" ) ) {
 	  toRet->chunkSize = infoIter->val.d[j].val->val.i;
 	  printf("Chunk Size: %d\n", toRet->chunkSize );
+	  logToFile( toRet, "STARTUP Chunk Size: %d\n", toRet->chunkSize );
 	}
 	else if ( 0 == strcmp( key, "name" ) ) {
 	  int nameLen = strlen(infoIter->val.d[j].val->val.s ) + 
@@ -82,6 +110,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
 	  snprintf( toRet->name, nameLen - 1, "%s/%s", 
 		    args->saveFile, infoIter->val.d[j].val->val.s );
 	  printf("Torrent Name: %s\n", toRet->name );
+	  logToFile( toRet, "STARTUP Torrent Name: %s\n", toRet->name );
 	}
 	else if ( 0 == strcmp( key, "pieces" ) ) {
 	  chunkHashesLen = be_str_len( infoIter->val.d[j].val );
@@ -89,6 +118,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
 	  memcpy( chunkHashes, infoIter->val.d[j].val->val.s, 
 		  chunkHashesLen );
 	  printf( "Hashes Length: %d\n", chunkHashesLen );
+	  logToFile( toRet, "STARTUP Hashes Length: %d\n", chunkHashesLen );
 	}
 	else {
 	  printf("Ignoring Field: %s\n", key );
@@ -98,10 +128,12 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
     else if ( 0 == strcmp( data->val.d[i].key, "creation date" ) ) {
       toRet->date = data->val.d[i].val->val.i;
       printf("Creation Date: %d\n", toRet->date);
+      logToFile( toRet, "STARTUP Creation Date: %d\n", toRet->date);
     }
     else if ( 0 == strcmp( data->val.d[i].key, "comment" ) ) {
       toRet->comment = strdup( data->val.d[i].val->val.s );
       printf("Comment: %s\n", toRet->comment);
+      logToFile( toRet, "STARTUP Comment: %s\n", toRet->comment);
     }
     else {
       printf("Ignoring Field : %s\n", data->val.d[i].key );
@@ -152,8 +184,11 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
   }
   free( chunkHashes );
 
+  logToFile( toRet, "STARTUP Initialized chunk and subchunk data structures\n");
+
   // Initialize our bitfield
   toRet->ourBitfield = Bitfield_Init( toRet->numChunks );
+  logToFile( toRet, "STARTUP Initialized bitfield data structure\n");
 
 
   // Read in the info dictionary so that we can compute the hash
@@ -174,6 +209,8 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
 
   toRet->infoHash = computeSHA1( string, fsize );
   free( string );
+
+  logToFile( toRet, "STARTUP Computed info-dict hash successfully\n");
 
   // Remove the file infoDict.bencoding, since we don't need it anymore
   if ( remove( "infoDict.bencoding" ) ) {
@@ -223,22 +260,7 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
 			  0 );
 			  
 
-  // Initialize our log file
-  FILE * logFile = 
-    fopen( args->logFile, "w+" ) ;
-  if ( logFile < 0 ) {
-    perror("open");
-    exit(1);
-  }
-  toRet->logFile = logFile;
-
-  // Get our startup time
-  struct timeval tv;
-  if ( gettimeofday( &tv, NULL ) ) {
-    perror("gettimeofday");
-    exit(1);
-  }
-  toRet->timer = tv.tv_sec * 1000000 + tv.tv_usec;
+  logToFile( toRet, "STARTUP Initialized save file memory mapping\n");
 
   // Initialize our timer ID's (we'll need to store them so
   // that we can free them at the end )
@@ -253,6 +275,9 @@ struct torrentInfo* processBencodedTorrent( be_node * data,
   }
   toRet->optimisticUnchoke = NULL;
   toRet->chokingIter = 0;
+
+  logToFile( toRet, "STARTUP Initialized peerInfo data structures\n");
+  logToFile( toRet, "STARTUP Processing .torrent file completed.\n");
 
   // Returns the initalized struct torrentInfo
   return toRet;
