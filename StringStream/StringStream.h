@@ -7,7 +7,6 @@
   buffer and reading data from the start of the buffer.
  */
 
-extern void * Malloc( size_t );
 
 typedef struct {
 

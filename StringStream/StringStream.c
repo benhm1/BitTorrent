@@ -6,7 +6,15 @@
 
 #include "StringStream.h"
 
+static void * Malloc( size_t size ) {
+  void * toRet = malloc( size );
+  if ( ! toRet ) {
+    perror("malloc");
+    exit(1);
+  }
+  return toRet;
 
+}
 
 StringStream * SS_Init() {
 

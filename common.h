@@ -100,13 +100,11 @@ struct subChunk {
  */
 struct chunkInfo {
 
-  int idx;  // TODO - unnecessary?
   int prevalence; // How many people that we are connected to have this piece?
   int size;  // How long is this piece?
   int have;  // Boolean do we have this piece or not? 
   int requested; // Boolean have we requested this piece?
   char * data;  // Pointer to data buffer for this piece
-  struct timeval tv; // TODO - where used
   char hash[20]; // SHA1 hash of piece
   int numSubChunks; // Number of subChunks corresponding to this piece
   struct subChunk * subChunks; // Pointer to array of subChunk structs

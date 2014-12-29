@@ -5,17 +5,20 @@
 
 #include "bitfield.h"
 
-static void* Malloc( size_t size ) {
+/*
+  bitfield.h - contains function definitions for a bitfield structure,
+  which implements an abstraction over getting and setting individual
+  bits in a flag-type structure.
+ */
 
+static void* Malloc( size_t size ) {
   void * toRet = malloc( size );
   if ( ! toRet ) {
     perror("malloc");
     exit(1);
   }
   return toRet;
-
 }
-
 
 int Bitfield_AllSet( Bitfield * cur ) {
 
