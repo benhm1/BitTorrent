@@ -422,7 +422,7 @@ void usage(FILE * file){
   }
 
   fprintf(file,
-          "bt-client [OPTIONS] file.torrent\n"
+          "bt-client [OPTIONS] \n"
           "  -h          \t Print this help screen\n"
           "  -t torrent  \t Torrent file name (required)\n"
 	  "  -b ip       \t Bind to this ip for incoming connections (dflt=INADDR_ANY)\n"

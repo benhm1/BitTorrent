@@ -1,0 +1,98 @@
+BitTorrent Client Implementation
+Ben Marks, December 2014
+
+This folder contains my implementation of a BitTorrent client. The 
+implementation includes code for:
+  (*)  Parsing the .torrent file
+  (*)  Communicating with the tracker server
+  (*)  Connecting to peers and requesting blocks
+  (*)  Receiving incoming connections and serving requests
+  (*)  Resuming interrupted torrents
+  (*)  Choking and unchoking peers
+  (*)  Requesting the rarest chunks of the torrent first
+  (*)  Logging operations and messages to a logfile
+
+The client successfully downloads the Linux kernel and runs	
+free of Valgrind errors.
+
+It should be noted that there are a number of limitations of 
+this client relative to a freely available client such as 
+uTorrent:
+  (*)  Only single file torrents are currently supported
+  (*)  Only communication with trackers over TCP is supported
+  (*)  Later extensions, such as DHT peer finding, is not supported.
+
+It should also be noted that the algorithms for choking have not been
+thoroughly tested. Due to the firewalls at Swarthmore's CS department,
+incoming connections are blocked, so peers in the outside world
+invariably fail to connect to our client. An additional instance of
+the program running within the department is able to connect, and data
+is successfully transferred between the two clients. However, it is
+difficult to test choking algorithms, designed to run with multiple
+peers, when all peers must be local. 
+
+Please let me know if you find any bugs in the implemetation and feel
+free to improve this or suggest ways for me to improve it. In addition
+to addressing the limitations above, I also would be interested in 
+modifying the implementation to use poll() instead of select(), since
+poll() generally has better performance.
+
+By releasing this software, I, in no way, condone the use of BitTorrent
+to receive illegal copies of files. Please do not use this client to 
+download files illegally.
+
+Finally, I am aware that many schools assign implementing the BitTorrent
+protocol as a Networking assignment. If you are currently enrolled in
+or will be enrolled in a networking course where you will be expected to
+implement this protocol, viewing, downloading, and / or submitting this
+code is almost certainly in violation of academic integrity policies.
+I am putting this on GitHub because I think it is an interesting project
+that I am proud of; please use it in appropriate ways.  
+
+
+Usage:
+
+bt-client [OPTIONS] 
+  -h          	     Print this help screen
+  -t torrent  	     Torrent file name (required)
+  -b ip       	     Bind to this ip for incoming connections (dflt=INADDR_ANY)
+  -p port     	     Bind to this port for incoming connections (dflt=6881)
+  -s save_file	     Save the torrent in directory save_dir (dflt: .)
+  -l log_file 	     Save logs to log_file (dflt: bt-client.log)
+  -I id       	     Set the node identifier to id (dflt: random)
+  -m max_num  	     Max number of peers to connect to at once (dflt:25)
+
+
+Included Files:
+
+Files implementing useful, modular functions:
+  utils/algorithms.{h|c}            Algorithms for sorting chunks and 
+  				    detecting timeouts
+  utils/base.{h|c}                  Functions useful outside of BitTorrent - 
+  				    loggers, SHA1, DNS
+  utils/choke.{h|c}                 Implementation of the choking potocol
+  utils/bencode.{h|c}               Library for parsing bencoding 
+  				    (not written by me)
+  utils/percentEncode.{h|c}         Percent encoding and decoding of strings
+
+Files implementing protocol messages
+  messages/tracker.{h|c}            Tracker status messages, connections, 
+  				    and parsing
+  messages/incomingMessages.{h|c}   Incoming messages received from peers
+  messages/outgoingMessages.{h|c}   Outgoing messages to peers
+
+Useful data structure abstractions
+  StringStream/StringStream.{h|c}   Abstraction of a data stream (queue) 
+  				    with push / pop
+  bitfield/bitfield.{h|c}           Abstraction of a bitfield for 
+  				    storing booleans
+  timer/timer.{h|c}                 Wrappers for easily setting timers 
+  				    and signal handlers
+
+BitTorrent Core Files
+  managePeers.{h|c}                 Manages peer connections, handshakes, 
+  				    teardowns
+  startup.{h|c}                     Manages startup operations, like 
+  				    parsing .torrent file
+  bt_client.{h|c}   		    Main select() loop, reading, writing, 
+  				    installation of signal handlers
