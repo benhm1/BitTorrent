@@ -7,6 +7,13 @@
   buffer and reading data from the start of the buffer.
  */
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <assert.h>
+
+
 
 typedef struct {
 

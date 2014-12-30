@@ -1,6 +1,14 @@
+/*
+  choke.c - contains function definitions for all functions
+  associated with choking and unchoking peers as described
+  in Cohen's specification. Includes functions for choosing
+  a peer to optimistically unchoke, selecting the other peers
+  to be unchoked, and sending the necessary choke and unchoke
+  messages.
+*/
 
-#include "../common.h"
 
+#include "choke.h"
 extern void * Malloc( size_t );
 extern void sendChoke( struct peerInfo *, struct torrentInfo * );
 extern void sendUnchoke( struct peerInfo *, struct torrentInfo * );

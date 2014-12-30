@@ -1,8 +1,8 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <ctype.h>
-#include <assert.h>
+/*
+  StringStream.c - Function definitions for the StringStream interface,
+  which provides a buffer abstraction for pushing data to the end of the
+  buffer and reading data from the start of the buffer.
+*/
 
 #include "StringStream.h"
 

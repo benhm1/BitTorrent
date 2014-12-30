@@ -1,9 +1,9 @@
-#include <stdlib.h>
-#include <unistd.h>
-#include <stdio.h>
-#include <signal.h>
-#include <time.h>
 
+/*
+  timer.c - function definitions for timed signal handling and signal
+  blocking / unblocking. This allows the user to define a large set of
+  handlers that run at specified intervals (ie - multiple alarms). 
+*/
 
 #include "timer.h"
 

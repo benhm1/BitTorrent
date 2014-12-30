@@ -2,6 +2,19 @@
 #define _BM_BT_CHOKE_H
 
 /*
+  choke.h - contains function declarations for all functions
+  associated with choking and unchoking peers as described
+  in Cohen's specification. Includes functions for choosing
+  a peer to optimistically unchoke, selecting the other peers
+  to be unchoked, and sending the necessary choke and unchoke
+  messages.
+*/
+
+
+#include "../common.h"
+
+
+/*
   Choose a peer at random to be unchoked. Maybe they'll
   become more fruitful than our current set of peers!
 

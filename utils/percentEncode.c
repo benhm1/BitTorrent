@@ -1,7 +1,12 @@
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <ctype.h>
+/*
+  percentEncode.c - Contains function definitions for percent
+  encoding and percent decoding messages. When a message is percent
+  encoded, all non-letters and non- digits are represented as %XX, where
+  XX is a hex representation of the value. It is used for communicating
+  with a tracker. 
+*/
+
+#include "percentEncode.h"
 
 void * percentEncode( void * original, int len ) {
 

@@ -2,8 +2,10 @@
 #define _BM_TIMER_H_
 
 /*
-  timer.h - 
- */
+  timer.h - function declarations for timed signal handling and signal
+  blocking / unblocking. This allows the user to define a large set of
+  handlers that run at specified intervals (ie - multiple alarms). 
+*/
 
 #include <sys/types.h>
 #include <stdlib.h>
